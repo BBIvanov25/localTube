@@ -769,12 +769,14 @@
   function processThumbnail(worker, video) {
     return new Promise(resolve => {
       let settled = false;
+      let targetTime = 0;
       const finish = (thumbnail = "", duration = 0) => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
         worker.removeEventListener("loadedmetadata", onMetadata);
         worker.removeEventListener("loadeddata", onLoadedData);
+        worker.removeEventListener("seeked", onSeeked);
         worker.removeEventListener("error", onError);
         video.previewError = !thumbnail;
         video.duration = Number.isFinite(duration) ? duration : 0;
@@ -783,7 +785,9 @@
         video.thumbnail = thumbnail;
         resolve();
       };
-      const onLoadedData = () => {
+      const captureFrame = () => {
+        if (worker.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || worker.seeking) return;
+        if (targetTime > 0 && Math.abs(worker.currentTime - targetTime) > 0.25) return;
         try {
           if (!worker.videoWidth || !worker.videoHeight) {
             finish("", worker.duration);
@@ -822,11 +826,24 @@
         video.width = worker.videoWidth || 0;
         video.height = worker.videoHeight || 0;
         video.duration = Number.isFinite(worker.duration) ? worker.duration : 0;
+        targetTime = Number.isFinite(worker.duration) && worker.duration > 0.2
+          ? Math.min(7.5, worker.duration / 2)
+          : 0;
+        if (targetTime > 0) {
+          try {
+            worker.currentTime = targetTime;
+          } catch {
+            finish("", worker.duration);
+          }
+        }
       };
+      const onLoadedData = () => captureFrame();
+      const onSeeked = () => captureFrame();
       const onError = () => finish("", worker.duration);
       const timeout = setTimeout(() => finish("", worker.duration), 30000);
       worker.addEventListener("loadedmetadata", onMetadata, { once: true });
       worker.addEventListener("loadeddata", onLoadedData, { once: true });
+      worker.addEventListener("seeked", onSeeked);
       worker.addEventListener("error", onError, { once: true });
       worker.src = video.url;
       worker.load();
