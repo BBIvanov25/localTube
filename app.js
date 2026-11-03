@@ -4,6 +4,15 @@
   const VIDEO_EXTENSIONS = /\.(mp4|m4v|mov|webm|ogv|ogg|mkv|avi|mpg|mpeg|wmv|3gp|mts|m2ts)$/i;
   const STORAGE_KEY = "localtube-library-v1";
   const byId = (id) => document.getElementById(id);
+  const createIcon = (name, className = "icon") => {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+    svg.setAttribute("class", className);
+    svg.setAttribute("aria-hidden", "true");
+    use.setAttribute("href", `#icon-${name}`);
+    svg.append(use);
+    return svg;
+  };
   const fileInput = byId("folder-input");
   const searchInput = byId("search");
   const grid = byId("video-grid");
@@ -181,6 +190,7 @@
     thumb.className = "thumb-wrap";
     const skeleton = document.createElement("div");
     skeleton.className = "thumb-skeleton";
+    skeleton.append(createIcon("play", "icon icon-filled"));
     const image = document.createElement("img");
     image.className = "thumb-image";
     image.alt = "";
@@ -198,7 +208,10 @@
     later.className = "card-later";
     later.setAttribute("aria-label", getSaved(video).later ? "Remove from watch later" : "Add to watch later");
     later.title = later.getAttribute("aria-label");
-    later.textContent = getSaved(video).later ? "Saved" : "Save";
+    later.append(createIcon("bookmark"));
+    const laterLabel = document.createElement("span");
+    laterLabel.textContent = getSaved(video).later ? "Saved" : "Save";
+    later.append(laterLabel);
     later.classList.toggle("saved", getSaved(video).later);
     later.addEventListener("click", event => {
       event.stopPropagation();
@@ -438,10 +451,11 @@
 
   function updateLaterButton() {
     const saved = activeVideo ? getSaved(activeVideo) : { later: false };
-    byId("player-later").classList.toggle("saved", saved.later);
-    byId("player-later").textContent = saved.later ? "Saved to Watch later" : "Save to Watch later";
-    byId("player-later").title = saved.later ? "Remove from watch later" : "Add to watch later";
-    byId("player-later").setAttribute("aria-label", byId("player-later").title);
+    const button = byId("player-later");
+    button.classList.toggle("saved", saved.later);
+    button.querySelector(".button-label").textContent = saved.later ? "Saved to Watch later" : "Save to Watch later";
+    button.title = saved.later ? "Remove from watch later" : "Add to watch later";
+    button.setAttribute("aria-label", button.title);
   }
 
   function videoTokens(video) {
@@ -593,8 +607,10 @@
 
   function updateFullscreenButton() {
     const fullscreen = document.fullscreenElement === playerShell;
-    byId("fullscreen-toggle").setAttribute("aria-label", fullscreen ? "Exit full screen" : "Full screen");
-    byId("fullscreen-toggle").title = fullscreen ? "Exit full screen (F)" : "Full screen (F)";
+    const button = byId("fullscreen-toggle");
+    button.setAttribute("aria-label", fullscreen ? "Exit full screen" : "Full screen");
+    button.title = fullscreen ? "Exit full screen (F)" : "Full screen (F)";
+    button.querySelector("use").setAttribute("href", fullscreen ? "#icon-fullscreen-exit" : "#icon-fullscreen");
   }
 
   function openPlayer(video) {
@@ -653,7 +669,12 @@
     playerModal.hidden = true;
     document.body.style.overflow = "";
     byId("watch-page").classList.remove("theater");
-    byId("theater-toggle").setAttribute("aria-pressed", "false");
+    const theaterToggle = byId("theater-toggle");
+    theaterToggle.setAttribute("aria-pressed", "false");
+    theaterToggle.setAttribute("aria-label", "Theater mode");
+    theaterToggle.title = "Theater mode (T)";
+    theaterToggle.querySelector(".button-label").textContent = "Theater";
+    theaterToggle.querySelector("use").setAttribute("href", "#icon-theater");
     activeVideo = null;
     updateLibrary();
   }
@@ -739,7 +760,10 @@
   byId("theater-toggle").addEventListener("click", event => {
     const enabled = event.currentTarget.getAttribute("aria-pressed") !== "true";
     event.currentTarget.setAttribute("aria-pressed", String(enabled));
-    event.currentTarget.textContent = enabled ? "Exit theater" : "Theater";
+    event.currentTarget.setAttribute("aria-label", enabled ? "Exit theater mode" : "Theater mode");
+    event.currentTarget.title = enabled ? "Exit theater mode (T)" : "Theater mode (T)";
+    event.currentTarget.querySelector(".button-label").textContent = enabled ? "Exit theater" : "Theater";
+    event.currentTarget.querySelector("use").setAttribute("href", enabled ? "#icon-theater-exit" : "#icon-theater");
     byId("watch-page").classList.toggle("theater", enabled);
     event.currentTarget.focus();
   });
