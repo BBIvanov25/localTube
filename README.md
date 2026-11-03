@@ -8,14 +8,16 @@ A private, local video library that runs in your browser. Browse a folder of vid
 2. Open `index.html` in a recent version of Chrome, Edge, Firefox, or Safari.
 3. Choose a video folder.
 
-Folder selection uses the browser's directory picker. Current Chrome, Edge, Firefox, and Safari support it. If a browser does not provide folder selection, choose multiple video files instead. The browser does not retain access to a selected folder after the page closes, so select it again the next time you use LocalTube.
+Folder selection uses the browser's directory picker. Current Chrome, Edge, Firefox, and Safari support it. If a browser does not provide folder selection, choose multiple video files instead. LocalTube saves the selected video files in this browser so the library survives a page refresh. You do not need to keep the original folder picker open.
 
 ## Features
 
 - Search by video name or folder path; sort by name, recently added, duration, or file size.
-- Generate local thumbnails and hover over a thumbnail to preview frames.
+- Generate a collage from six random local video frames and hover over a thumbnail to preview frames.
 - Continue playback from locally saved progress; keep a Watch later list.
-- Seek with frame and time previews, adjust volume and playback speed, and use theater or fullscreen mode.
+- Create playlists, add videos, skip through a queue, and shuffle playback.
+- Load local WebVTT or SubRip subtitles; show duration, resolution, format, size, path, and modified date.
+- Seek with frame and time previews, adjust volume and playback speed, and use full-width theater or fullscreen mode.
 - Keep unsupported video formats visible and show when the browser cannot preview or play them.
 - Use a custom SVG icon set without external assets, fonts, services, or build tools.
 
@@ -25,7 +27,7 @@ LocalTube is a static web app with no install step, build step, or third-party d
 
 Video playback and thumbnail generation depend on the browser's built-in codec support. A video may appear in the library even if that browser cannot preview or play its format; codec availability varies by browser, operating system, and file.
 
-Video files are read locally by the browser. Watch progress and Watch later choices are stored in that browser's local storage; video data, folder access, and temporary preview URLs are not saved there. Clearing browser data removes saved progress.
+Selected video files are stored in this browser's IndexedDB database, while watch progress, Watch later choices, and playlists use local storage. Everything stays on this device and is never uploaded. The browser's storage quota may limit how much video can be retained; LocalTube reports when saving fails. Use **Forget library** to remove the saved video files, playlists, and watch history, or clear this site's browser data. Temporary playback and subtitle URLs are not persisted.
 
 ## Keyboard shortcuts
 
