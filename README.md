@@ -13,7 +13,7 @@ Folder selection uses the browser's directory picker. Current Chrome, Edge, Fire
 ## Features
 
 - Search by video name or folder path; sort by name, recently added, duration, or file size.
-- Generate a collage from six random local video frames and hover over a thumbnail to preview frames.
+- Generate a lightweight thumbnail from the first video frame and hover over it to preview frames.
 - Continue playback from locally saved progress; keep a Watch later list.
 - Create playlists, add videos, skip through a queue, and shuffle playback.
 - Load local WebVTT or SubRip subtitles; show duration, resolution, format, size, path, and modified date.

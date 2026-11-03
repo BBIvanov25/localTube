@@ -724,7 +724,7 @@
     showStatus(`Creating previews… 0 of ${videos.length}`);
     const worker = document.createElement("video");
     worker.muted = true;
-    worker.preload = "auto";
+    worker.preload = "metadata";
     let index = 0;
     let unavailable = 0;
 
@@ -752,14 +752,14 @@
         if (card) updateCardThumbnail(card, video);
         if (activeVideo === video) updateVideoDetails(video);
         if (activeVideo && !playerModal.hidden) renderRecommendations(activeVideo);
-        showStatus(`Creating six-frame previews… ${index} of ${videos.length}${persistenceNotice ? ` · ${persistenceNotice}` : ""}`);
+        showStatus(`Creating previews… ${index} of ${videos.length}${persistenceNotice ? ` · ${persistenceNotice}` : ""}`);
         updateLibrarySubtitle();
         loadNext();
       }).catch(error => {
         if (generation !== thumbGeneration) return;
         console.info(`Preview unavailable for ${video.file.name}:`, error);
         unavailable++;
-        showStatus(`Creating six-frame previews… ${index} of ${videos.length}${persistenceNotice ? ` · ${persistenceNotice}` : ""}`);
+        showStatus(`Creating previews… ${index} of ${videos.length}${persistenceNotice ? ` · ${persistenceNotice}` : ""}`);
         loadNext();
       });
     };
@@ -769,16 +769,12 @@
   function processThumbnail(worker, video) {
     return new Promise(resolve => {
       let settled = false;
-      let targets = [];
-      let frameIndex = 0;
-      let canvas;
-      let context;
       const finish = (thumbnail = "", duration = 0) => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
         worker.removeEventListener("loadedmetadata", onMetadata);
-        worker.removeEventListener("seeked", onSeeked);
+        worker.removeEventListener("loadeddata", onLoadedData);
         worker.removeEventListener("error", onError);
         video.previewError = !thumbnail;
         video.duration = Number.isFinite(duration) ? duration : 0;
@@ -787,35 +783,37 @@
         video.thumbnail = thumbnail;
         resolve();
       };
-      const captureFrame = () => {
+      const onLoadedData = () => {
         try {
-          const columns = 3;
-          const cellWidth = canvas.width / columns;
-          const cellHeight = canvas.height / 2;
-          const cellX = (frameIndex % columns) * cellWidth;
-          const cellY = Math.floor(frameIndex / columns) * cellHeight;
+          if (!worker.videoWidth || !worker.videoHeight) {
+            finish("", worker.duration);
+            return;
+          }
+          const canvas = document.createElement("canvas");
+          canvas.width = 480;
+          canvas.height = 270;
+          const context = canvas.getContext("2d", { alpha: false });
+          if (!context) {
+            finish("", worker.duration);
+            return;
+          }
           const sourceRatio = worker.videoWidth / worker.videoHeight;
-          const cellRatio = cellWidth / cellHeight;
+          const targetRatio = canvas.width / canvas.height;
           let sourceWidth = worker.videoWidth;
           let sourceHeight = worker.videoHeight;
-          if (sourceRatio > cellRatio) {
-            sourceWidth = sourceHeight * cellRatio;
+          if (sourceRatio > targetRatio) {
+            sourceWidth = sourceHeight * targetRatio;
           } else {
-            sourceHeight = sourceWidth / cellRatio;
+            sourceHeight = sourceWidth / targetRatio;
           }
           const sourceX = (worker.videoWidth - sourceWidth) / 2;
           const sourceY = (worker.videoHeight - sourceHeight) / 2;
           context.drawImage(
             worker,
             sourceX, sourceY, sourceWidth, sourceHeight,
-            cellX, cellY, cellWidth, cellHeight
+            0, 0, canvas.width, canvas.height
           );
-          frameIndex++;
-          if (frameIndex >= targets.length) {
-            finish(canvas.toDataURL("image/jpeg", .82), worker.duration);
-          } else {
-            seekFrame();
-          }
+          finish(canvas.toDataURL("image/jpeg", .78), worker.duration);
         } catch {
           finish("", worker.duration);
         }
@@ -824,43 +822,11 @@
         video.width = worker.videoWidth || 0;
         video.height = worker.videoHeight || 0;
         video.duration = Number.isFinite(worker.duration) ? worker.duration : 0;
-        canvas = document.createElement("canvas");
-        canvas.width = 960;
-        canvas.height = 540;
-        context = canvas.getContext("2d", { alpha: false });
-        if (!context || !worker.videoWidth || !worker.videoHeight) {
-          finish("", worker.duration);
-          return;
-        }
-        context.fillStyle = "#101114";
-        context.fillRect(0, 0, canvas.width, canvas.height);
-        if (Number.isFinite(worker.duration) && worker.duration > 0.2) {
-          const start = Math.min(worker.duration * .02, .25);
-          const end = Math.max(start, worker.duration - Math.min(worker.duration * .02, .25));
-          targets = Array.from({ length: 6 }, () => start + Math.random() * Math.max(0, end - start)).sort((a, b) => a - b);
-          seekFrame();
-        } else {
-          targets = [0];
-          captureFrame();
-        }
       };
-      const seekFrame = () => {
-        const target = targets[frameIndex];
-        if (!Number.isFinite(target) || target <= 0.01) {
-          captureFrame();
-          return;
-        }
-        try {
-          worker.currentTime = target;
-        } catch {
-          finish("", worker.duration);
-        }
-      };
-      const onSeeked = captureFrame;
       const onError = () => finish("", worker.duration);
       const timeout = setTimeout(() => finish("", worker.duration), 30000);
       worker.addEventListener("loadedmetadata", onMetadata, { once: true });
-      worker.addEventListener("seeked", onSeeked);
+      worker.addEventListener("loadeddata", onLoadedData, { once: true });
       worker.addEventListener("error", onError, { once: true });
       worker.src = video.url;
       worker.load();
@@ -876,7 +842,6 @@
       image.hidden = false;
       skeleton.hidden = true;
     }
-    image.classList.toggle("frame-collage", Boolean(video.thumbnail));
     duration.textContent = video.duration ? formatTime(video.duration) : "--:--";
   }
 

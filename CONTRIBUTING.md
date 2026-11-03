@@ -9,7 +9,7 @@ Thanks for helping improve LocalTube. Bug reports, thoughtful feature requests, 
 - Keep unsupported videos visible and report preview or playback errors clearly.
 - Run `node --check app.js` and manually test the affected flow in Chrome, Firefox, and Safari when available.
 
-For changes to video handling, test with a browser-decodable video as well as an unsupported format. Check folder selection (or the multiple-file fallback), six-frame collage generation, playback, subtitles, playlists and queue controls, Watch later, saved progress, and library restoration after refresh when those flows are affected.
+For changes to video handling, test with a browser-decodable video as well as an unsupported format. Check folder selection (or the multiple-file fallback), first-frame thumbnail generation, playback, subtitles, playlists and queue controls, Watch later, saved progress, and library restoration after refresh when those flows are affected.
 
 ## Release checks
 
