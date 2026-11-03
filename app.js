@@ -25,6 +25,7 @@
   const seekTrack = byId("seek-track");
   const seekPreview = byId("seek-preview");
   const seekPreviewVideo = byId("seek-preview-video");
+  const supportsDirectoryPicker = "webkitdirectory" in HTMLInputElement.prototype;
   let videos = [];
   let activeFilter = "all";
   let activeVideo = null;
@@ -36,6 +37,14 @@
   let lastVolume = 1;
   let lastProgressSave = -1;
   let savedState = readSavedState();
+
+  if (!supportsDirectoryPicker) {
+    fileInput.removeAttribute("webkitdirectory");
+    fileInput.removeAttribute("directory");
+    byId("choose-folder").querySelector(".button-label").textContent = "Choose videos";
+    byId("welcome-choose").querySelector(".button-label").textContent = "Choose video files";
+    byId("support-note").textContent = "Select multiple video files at once; folder selection is unavailable in this browser.";
+  }
 
   function readSavedState() {
     try {
@@ -95,7 +104,9 @@
     const files = Array.from(fileInput.files || []).filter(file => file.type.startsWith("video/") || VIDEO_EXTENSIONS.test(file.name));
     if (!files.length) {
       const welcomeStatus = byId("welcome-status");
-      welcomeStatus.textContent = "No video files found in that folder. Choose a folder with video files to get started.";
+      welcomeStatus.textContent = supportsDirectoryPicker
+        ? "No video files found in that folder. Choose a folder with video files to get started."
+        : "No video files selected. Choose one or more video files to get started.";
       welcomeStatus.hidden = false;
       return;
     }

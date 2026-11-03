@@ -5,10 +5,10 @@ A private, local video library that runs in your browser. Browse a folder of vid
 ## Get started
 
 1. Download or clone this repository.
-2. Open `index.html` in a recent version of Chrome or Edge.
+2. Open `index.html` in a recent version of Chrome, Edge, Firefox, or Safari.
 3. Choose a video folder.
 
-Folder selection uses the browser's `webkitdirectory` file picker. The browser does not retain access to a selected folder after the page closes, so select it again the next time you use LocalTube.
+Folder selection uses the browser's directory picker. Current Chrome, Edge, Firefox, and Safari support it. If a browser does not provide folder selection, choose multiple video files instead. The browser does not retain access to a selected folder after the page closes, so select it again the next time you use LocalTube.
 
 ## Features
 
@@ -21,7 +21,9 @@ Folder selection uses the browser's `webkitdirectory` file picker. The browser d
 
 ## Browser support and privacy
 
-LocalTube is a static web app with no install step, server, or third-party dependencies. Recent Chromium-based browsers are recommended. Folder selection requires a browser that supports `webkitdirectory`; playback and thumbnail generation depend on that browser's supported codecs, so compatibility can vary by browser and video format.
+LocalTube is a static web app with no install step, build step, or third-party dependencies. It is designed for current Chrome, Edge, Firefox, and Safari, as well as other modern browsers. Browsers without folder selection can still load multiple video files at once.
+
+Video playback and thumbnail generation depend on the browser's built-in codec support. A video may appear in the library even if that browser cannot preview or play its format; codec availability varies by browser, operating system, and file.
 
 Video files are read locally by the browser. Watch progress and Watch later choices are stored in that browser's local storage; video data, folder access, and temporary preview URLs are not saved there. Clearing browser data removes saved progress.
 

@@ -35,8 +35,8 @@
       <input id="search" type="search" placeholder="Search your videos" autocomplete="off">
       <svg class="icon search-icon" aria-hidden="true"><use href="#icon-search"></use></svg>
     </label>
-    <button class="folder-button" id="choose-folder" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-folder"></use></svg>Choose folder</button>
-    <input id="folder-input" type="file" accept="video/*,.mkv,.avi,.mov,.webm,.m4v,.mpg,.mpeg,.wmv,.3gp" webkitdirectory directory multiple hidden>
+    <button class="folder-button" id="choose-folder" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-folder"></use></svg><span class="button-label">Choose folder</span></button>
+    <input id="folder-input" type="file" accept="video/*,.mkv,.avi,.mov,.webm,.m4v,.mpg,.mpeg,.wmv,.3gp,.ogv,.ogg,.mts,.m2ts" webkitdirectory directory multiple hidden>
   </header>
 
   <div class="app-layout">
@@ -63,8 +63,8 @@
         <p class="eyebrow">YOUR OWN LITTLE CINEMA</p>
         <h1>All your videos,<br><span>in one place.</span></h1>
         <p class="welcome-copy">Pick a folder to build a beautiful, searchable library. Your videos never leave your computer.</p>
-        <button class="primary-button" id="welcome-choose" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-folder"></use></svg>Choose a video folder</button>
-        <p class="support-note">Works best in Chromium-based browsers · Supports nested folders</p>
+        <button class="primary-button" id="welcome-choose" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-folder"></use></svg><span class="button-label">Choose a video folder</span></button>
+        <p id="support-note" class="support-note">Works in current Chrome, Edge, Firefox, and Safari · Video format support varies</p>
         <p id="welcome-status" class="welcome-status" role="status" hidden></p>
       </section>
 
