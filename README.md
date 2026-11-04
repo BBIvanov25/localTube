@@ -1,16 +1,20 @@
 # LocalTube
 
-A private, local video library that runs in your browser. Browse a folder of videos, search and sort your library, preview frames, and keep watching progress on your device. Your videos are never uploaded.
+A private, local video library for Windows and the browser. Browse a folder of videos, search and sort your library, preview frames, and keep watching progress on your device. Your videos are never uploaded.
 
 ## Get started
 
-1. Download or clone this repository.
-2. Open `index.html` in a recent version of Chrome, Edge, Firefox, or Safari.
-3. Choose a video folder.
+### Windows desktop app
 
-Folder selection uses the browser's directory picker. Current Chrome, Edge, Firefox, and Safari support it. Browsers with writable folder access (such as current Chrome and Edge) can automatically save `localtube-metadata.json` beside the videos as you edit metadata. The library displays its first batch of videos while it continues loading the rest. Other browsers keep metadata in this browser; use **Export metadata** to save a portable copy. If a browser does not provide folder selection, choose multiple video files instead. LocalTube temporarily saves selected video files so the library survives a page refresh in the same tab. Starting the app again clears those temporary video copies; select the folder again to use the library.
+On Windows 10/11 (64-bit), run the installer (`LocalTube_*_x64-setup.exe`) or launch `LocalTube-Portable.exe` from the portable release. The installer can download and install the Microsoft Edge WebView2 Runtime if needed. The portable app requires that runtime to already be installed. Both builds keep watch history, playlists, and metadata in the current Windows user's AppData; the portable build does not store data beside its executable. Select your video folder again after each fresh app launch.
 
-For HDD-friendly browsing, LocalTube reads one video at a time only as its card approaches the viewport, then releases the file as soon as its details and (when needed) a midpoint thumbnail are ready. User-selected thumbnails always take priority, and generated thumbnails plus duration and resolution are cached in browser metadata so they do not need to be decoded again on the next visit. The first library save copies selected video data into browser storage for refresh recovery, so the source drive may stay active until the status confirms saving is complete.
+### Browser edition
+
+Download or clone this repository and open `index.html` in a recent version of Chrome, Edge, Firefox, or Safari, then choose a video folder.
+
+Folder selection uses the platform's directory picker where available. Browsers with writable folder access (such as current Chrome and Edge) can automatically save `localtube-metadata.json` beside the videos as you edit metadata. Otherwise, metadata stays in local app/browser storage; use **Export metadata** to save a portable copy. If directory selection is unavailable, choose multiple video files instead. The library displays its first batch of videos while it continues loading the rest.
+
+For HDD-friendly browsing, LocalTube reads one video at a time only as its card approaches the viewport, then releases the file as soon as its details and (when needed) a midpoint thumbnail are ready. User-selected thumbnails always take priority, and generated thumbnails plus duration and resolution are cached in app/browser metadata. In the browser edition, selected video data is temporarily saved for refresh recovery; that temporary copy is cleared when starting the app again. In the desktop app, app data is stored per Windows user.
 
 ## Features
 
@@ -27,11 +31,11 @@ For HDD-friendly browsing, LocalTube reads one video at a time only as its card 
 
 ## Browser support and privacy
 
-LocalTube is a static web app with no install step, build step, or third-party dependencies. It is designed for current Chrome, Edge, Firefox, and Safari, as well as other modern browsers. Browsers without folder selection can still load multiple video files at once.
+The browser edition remains a static web app with no install step, build step, or third-party dependencies. It is designed for current Chrome, Edge, Firefox, and Safari, as well as other modern browsers. The Windows desktop edition uses Tauri and the Microsoft Edge WebView2 Runtime and targets Windows 10/11 (64-bit). Browsers without folder selection can still load multiple video files at once.
 
 Video playback and thumbnail generation depend on the browser's built-in codec support. A video may appear in the library even if that browser cannot play or create a thumbnail for its format; codec availability varies by browser, operating system, and file.
 
-Selected video files are stored temporarily in this tab's IndexedDB session cache so a page refresh can restore them; starting the app in a new navigation clears that cache. Watch progress, Watch later choices, playlists, and metadata use browser storage and remain across app starts. When a browser supports writable folder access, LocalTube requests access to the selected folder and writes metadata there; videos and other files are never uploaded. The folder permission may need to be granted again after reopening the app. The browser's storage quota may limit how much video can be retained; LocalTube reports when saving fails. Use **Forget library** to remove the saved video files, metadata, playlists, and watch history, or clear this site's browser data. Temporary playback and subtitle URLs are not persisted.
+Selected video files are stored temporarily in IndexedDB so a page refresh can restore them; starting the app in a new navigation clears that cache. Watch progress, Watch later choices, playlists, and metadata persist in browser storage or, for the Windows desktop app, in the per-user WebView2 app data. Select the folder again after each fresh desktop launch. When writable folder access is supported, LocalTube requests access to the selected folder and writes metadata there; videos and other files are never uploaded. Browser storage quotas may limit temporary video retention; LocalTube reports when saving fails. Use **Forget library** to remove saved video files, metadata, playlists, and watch history, or clear the relevant browser/app data. Temporary playback and subtitle URLs are not persisted.
 
 ## Keyboard shortcuts
 
@@ -52,15 +56,29 @@ While the player is open:
 - `index.html` — semantic app structure, accessible controls, and inline SVG icon sprite
 - `styles.css` — design tokens, library/player layouts, and responsive breakpoints
 - `app.js` — application state, persistence, rendering, previews, playlists, and playback
+- `package.json` and `vite.config.js` — desktop development and frontend build commands
+- `src-tauri/` — Tauri Windows application shell and bundle configuration
+- `scripts/package-windows.js` — copies the installer and portable executable to `release/`
 - `CONTRIBUTING.md` — local development and release checks
+
+## Build the Windows app
+
+Install Node.js, the stable Rust MSVC toolchain, and Visual Studio Build Tools with the **Desktop development with C++** workload (including the Windows SDK). Run the commands below from an x64 Visual Studio Developer Command Prompt so the MSVC linker is available:
+
+```powershell
+npm ci
+npm run build:windows
+```
+
+The `release/` folder contains the NSIS installer and `LocalTube-Portable.exe`. The installer can bootstrap WebView2 when needed; the portable executable requires the WebView2 Runtime to already be installed.
 
 ## Contributing
 
-Bug reports and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for development and release checks. LocalTube has no build step; to check the JavaScript syntax, run `node --check app.js`.
+Bug reports and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for development and release checks. The browser edition has no build step; to check the JavaScript syntax, run `node --check app.js`.
 
 ## Codebase guide
 
-The app is a dependency-free page: `index.html` supplies the DOM, `styles.css` styles it, and `app.js` wires browser APIs and user interactions. Keep IDs used by `byId()` in sync with the HTML when adding or renaming controls. The app script is loaded at the end of the body so those DOM elements exist before it initializes.
+The browser edition remains a dependency-free page: `index.html` supplies the DOM, `styles.css` styles it, and `app.js` wires browser APIs and user interactions. The desktop edition packages that same frontend in a Tauri WebView2 window. Keep IDs used by `byId()` in sync with the HTML when adding or renaming controls. The app script is loaded at the end of the body so those DOM elements exist before it initializes.
 
 ### Main JavaScript areas
 

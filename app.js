@@ -35,6 +35,10 @@
   const metadataInput = byId("metadata-input");
   const supportsWebkitDirectoryInput = "webkitdirectory" in HTMLInputElement.prototype;
   const supportsWritableDirectoryPicker = typeof window.showDirectoryPicker === "function";
+  const isDesktopApp = Boolean(window.__TAURI_INTERNALS__);
+  const platformLabel = isDesktopApp ? "app" : "browser";
+  const storageLabel = isDesktopApp ? "the app" : "this browser";
+  const mediaSessionLabel = isDesktopApp ? "this app session" : "this browser tab session";
   let videos = [];
   let activeFilter = "all";
   let activeVideo = null;
@@ -77,12 +81,12 @@
   if (!supportsWebkitDirectoryInput && !supportsWritableDirectoryPicker) {
     byId("choose-folder").querySelector(".button-label").textContent = "Choose videos";
     byId("welcome-choose").querySelector(".button-label").textContent = "Choose video files";
-    byId("support-note").textContent = "Select multiple video files at once; folder selection is unavailable in this browser.";
+    byId("support-note").textContent = `Select multiple video files at once; folder selection is unavailable in this ${platformLabel}.`;
   }
   if (supportsWritableDirectoryPicker) {
     byId("support-note").textContent = "Choose a folder to automatically save metadata beside your videos. Video format support varies.";
   } else {
-    byId("support-note").textContent += " Metadata stays in this browser; use Export metadata for a portable copy.";
+    byId("support-note").textContent += ` Metadata stays in ${storageLabel}; use Export metadata for a portable copy.`;
   }
 
   // Watch progress and playlists are small localStorage records, separate from video blobs.
@@ -113,7 +117,7 @@
       localStorage.setItem(PLAYLIST_STORAGE_KEY, JSON.stringify(playlists));
     } catch (error) {
       console.warn("Could not save LocalTube playlists.", error);
-      showStatus("Playlist changes could not be saved in this browser.");
+      showStatus(`Playlist changes could not be saved in ${storageLabel}.`);
     }
   }
 
@@ -122,7 +126,7 @@
       localStorage.setItem(STORAGE_KEY, JSON.stringify(savedState));
     } catch (error) {
       console.warn("Could not save LocalTube progress.", error);
-      showStatus("Playback progress could not be saved in this browser.");
+      showStatus(`Playback progress could not be saved in ${storageLabel}.`);
     }
   }
 
@@ -344,7 +348,7 @@
   function openMediaDatabase() {
     return new Promise((resolve, reject) => {
       if (!("indexedDB" in window)) {
-        reject(new Error("This browser does not support persistent local video storage."));
+        reject(new Error(`This ${platformLabel} does not support persistent local video storage.`));
         return;
       }
       const request = indexedDB.open(MEDIA_DATABASE, 2);
@@ -393,7 +397,7 @@
       };
     })).catch(error => {
       console.warn("Could not save LocalTube video metadata.", error);
-      showStatus("Video metadata could not be saved in this browser. Export a metadata file to keep a portable copy.");
+      showStatus(`Video metadata could not be saved in ${storageLabel}. Export a metadata file to keep a portable copy.`);
       throw error;
     });
   }
@@ -471,7 +475,7 @@
       };
       transaction.onabort = () => {
         database.close();
-        reject(transaction.error || new Error("The browser could not store these videos."));
+        reject(transaction.error || new Error(`The ${platformLabel} could not store these videos.`));
       };
     }));
     const operation = mediaWriteQueue.then(write);
@@ -870,17 +874,17 @@
 
     loadingVideosTotal = 0;
     updateLibrary();
-    persistenceNotice = "Saving video files for this tab session…";
+    persistenceNotice = `Saving video files for ${mediaSessionLabel}…`;
     showStatus(persistenceNotice);
     Promise.resolve().then(() => storePersistedMedia(entries)).then(() => {
       if (generation !== selectionGeneration) return;
       persistenceNotice = "";
-      showStatus("Video files are saved for this tab session and will be available after a refresh.");
+      showStatus(`Video files are saved for ${mediaSessionLabel} and will be available after a refresh.`);
       processNextVideoMetadata(metadataGeneration);
     }).catch(error => {
       console.warn("The selected videos could not be retained after refresh.", error);
       if (generation !== selectionGeneration) return;
-      persistenceNotice = "Videos are available for this visit, but the browser could not retain them after refresh. Check available storage and browser permissions.";
+      persistenceNotice = `Videos are available for this visit, but the ${platformLabel} could not retain them after refresh. Check available storage and ${platformLabel} permissions.`;
       showStatus(persistenceNotice);
       processNextVideoMetadata(metadataGeneration);
     });
@@ -902,7 +906,7 @@
     if (generation !== selectionGeneration) return;
     if (metadataFile) await importMetadataFile(metadataFile, false);
     if (generation !== selectionGeneration) return;
-    persistenceNotice = "Saving video files for this tab session…";
+    persistenceNotice = `Saving video files for ${mediaSessionLabel}…`;
     loadingVideosTotal = 0;
     if (videos.length) {
       showStatus(persistenceNotice);
@@ -916,12 +920,12 @@
     Promise.resolve().then(() => storePersistedMedia(entries)).then(() => {
       if (generation !== selectionGeneration) return;
       persistenceNotice = "";
-      showStatus("Video files are saved for this tab session and will be available after a refresh.");
+      showStatus(`Video files are saved for ${mediaSessionLabel} and will be available after a refresh.`);
       processNextVideoMetadata(metadataGeneration);
     }).catch(error => {
       console.warn("The selected videos could not be retained after refresh.", error);
       if (generation !== selectionGeneration) return;
-      persistenceNotice = "Videos are available for this visit, but the browser could not retain them after refresh. Check available storage and browser permissions.";
+      persistenceNotice = `Videos are available for this visit, but the ${platformLabel} could not retain them after refresh. Check available storage and ${platformLabel} permissions.`;
       showStatus(persistenceNotice);
       processNextVideoMetadata(metadataGeneration);
     });
@@ -931,7 +935,7 @@
       if (directoryHandle) {
         showStatus("Metadata can be saved beside your videos during this visit, but the folder could not be remembered for next time.");
       } else if (!metadataDirectoryHandle) {
-        showStatus("The previous folder permission could not be cleared from browser storage. Choose the new folder again if automatic saving resumes in the wrong location.");
+        showStatus(`The previous folder permission could not be cleared from local ${platformLabel} storage. Choose the new folder again if automatic saving resumes in the wrong location.`);
       }
     });
   }
@@ -947,7 +951,7 @@
     } catch (error) {
       if (error.name !== "AbortError") {
         console.warn("Could not open the LocalTube video folder.", error);
-        showStatus("The video folder could not be opened. Check browser permissions and try again.");
+        showStatus(`The video folder could not be opened. Check ${platformLabel} permissions and try again.`);
       }
       return;
     }
@@ -971,7 +975,7 @@
       await loadDirectoryVideos(fileHandles, metadataFile, directoryHandle);
     } catch (error) {
       console.warn("Could not read the selected LocalTube video folder.", error);
-      showStatus("The selected folder could not be read. Check browser permissions and try again.");
+      showStatus(`The selected folder could not be read. Check ${platformLabel} permissions and try again.`);
     }
   }
 
@@ -1204,13 +1208,13 @@
   }
 
   async function forgetLibrary() {
-    if (!videos.length || !await confirmAction("Remove the saved video files, metadata, playlists, and watch history from this browser?")) return;
+    if (!videos.length || !await confirmAction(`Remove the saved video files, metadata, playlists, and watch history from ${storageLabel}?`)) return;
     stopVideoMetadataLoading(false);
     try {
       await clearPersistedMedia();
     } catch (error) {
       console.warn("Could not forget the saved LocalTube video files.", error);
-      showStatus(`The saved video files could not be removed. ${error.message || "Check browser storage and try again."}`);
+      showStatus(`The saved video files could not be removed. ${error.message || `Check local ${platformLabel} storage and try again.`}`);
       return;
     }
     let removalWarning = "";
@@ -1241,7 +1245,7 @@
       renderPlaylists();
       library.hidden = true;
       welcome.hidden = false;
-      byId("welcome-status").textContent = removalWarning || "Saved videos and library data were removed from this browser.";
+      byId("welcome-status").textContent = removalWarning || `Saved videos and library data were removed from ${storageLabel}.`;
       byId("welcome-status").hidden = false;
     } catch (error) {
       console.warn("Could not finish clearing LocalTube library data.", error);
