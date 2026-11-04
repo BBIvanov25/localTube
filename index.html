@@ -8,6 +8,7 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <!-- Shared inline icons keep the app self-contained and avoid external asset requests. -->
   <svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false">
     <symbol id="icon-search" viewBox="0 0 24 24"><circle cx="10.8" cy="10.8" r="6.8"/><path d="m16 16 4.5 4.5"/></symbol>
     <symbol id="icon-folder" viewBox="0 0 24 24"><path d="M3.5 7.5h6l2 2h9v9h-17z"/><path d="M3.5 7.5v-1a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v1"/></symbol>
@@ -28,6 +29,7 @@
     <symbol id="icon-fullscreen" viewBox="0 0 24 24"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/></symbol>
     <symbol id="icon-fullscreen-exit" viewBox="0 0 24 24"><path d="M9 4v5H4m11-5v5h5M4 15h5v5m11-5h-5v5"/></symbol>
   </svg>
+  <!-- App-wide controls: search and local folder/file selection. -->
   <header class="topbar">
     <a class="brand" href="#" aria-label="LocalTube home">
       <span class="brand-mark" aria-hidden="true"><svg class="icon icon-filled"><use href="#icon-play"></use></svg></span>
@@ -39,10 +41,12 @@
       <svg class="icon search-icon" aria-hidden="true"><use href="#icon-search"></use></svg>
     </label>
     <button class="folder-button" id="choose-folder" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-folder"></use></svg><span class="button-label">Choose folder</span></button>
-    <input id="folder-input" type="file" accept="video/*,.mkv,.avi,.mov,.webm,.m4v,.mpg,.mpeg,.wmv,.3gp,.ogv,.ogg,.mts,.m2ts" webkitdirectory directory multiple hidden>
+    <input id="folder-input" type="file" accept="video/*,.mkv,.avi,.mov,.webm,.m4v,.mpg,.mpeg,.wmv,.3gp,.ogv,.ogg,.mts,.m2ts,.json,application/json" webkitdirectory directory multiple hidden>
+    <input id="metadata-input" type="file" accept=".json,application/json" hidden>
   </header>
 
   <div class="app-layout">
+    <!-- Library filters and user-created playlists. -->
     <aside class="sidebar" aria-label="Library navigation">
       <nav class="nav-list">
         <button class="nav-item active" data-filter="all"><svg class="icon" aria-hidden="true"><use href="#icon-grid"></use></svg>All videos <span class="nav-count" id="all-count"></span></button>
@@ -72,6 +76,7 @@
     </aside>
 
     <main class="main-content">
+      <!-- Welcome is shown before a library is loaded; the library replaces it afterward. -->
       <section id="welcome" class="welcome">
         <div class="welcome-art" aria-hidden="true">
           <div class="art-glow"></div>
@@ -86,6 +91,7 @@
         <p id="welcome-status" class="welcome-status" role="status" hidden></p>
       </section>
 
+      <!-- Search results, filters, and playlists all render into this library grid. -->
       <section id="library" class="library" hidden>
         <div class="library-heading">
           <div>
@@ -96,6 +102,8 @@
           <div class="library-tools">
             <button id="shuffle-playlist" class="library-action" type="button" hidden>Shuffle and play</button>
             <button id="delete-active-playlist" class="library-action" type="button" hidden>Delete playlist</button>
+            <button id="import-metadata" class="library-action" type="button">Import metadata</button>
+            <button id="export-metadata" class="library-action" type="button">Export metadata</button>
             <button id="forget-library" class="library-action" type="button" hidden>Forget library</button>
             <label class="sort-wrap">Sort by
               <select id="sort">
@@ -119,6 +127,7 @@
     </main>
   </div>
 
+  <!-- The modal contains the active video, custom controls, details, and recommendations. -->
   <div id="player-modal" class="player-modal" hidden>
     <section id="watch-page" class="watch-page" role="dialog" aria-modal="true" aria-labelledby="player-title">
       <header class="watch-topbar">
@@ -182,6 +191,32 @@
             <p id="player-file-info" class="video-file-info"></p>
             <dl id="video-properties" class="video-properties"></dl>
             <p id="player-description" class="video-description"></p>
+            <section class="video-metadata-tools" aria-label="Video metadata">
+              <form id="video-title-form" class="video-title-form">
+                <label for="custom-video-title">Display title</label>
+                <input id="custom-video-title" type="text" maxlength="160" autocomplete="off">
+                <button class="library-action" type="submit">Save title</button>
+                <button id="reset-video-title" class="library-action" type="button">Use filename</button>
+              </form>
+              <div class="thumbnail-tools">
+                <button id="set-thumbnail" class="library-action" type="button">Use current frame as thumbnail</button>
+                <button id="reset-thumbnail" class="library-action" type="button">Reset thumbnail</button>
+              </div>
+              <div class="segment-tools">
+                <h2>Named segments</h2>
+                <p>Save parts of this video without changing the original file.</p>
+                <label for="segment-name">Segment name</label>
+                <input id="segment-name" type="text" maxlength="100" placeholder="e.g. Favorite scene">
+                <div class="segment-markers">
+                  <button id="segment-mark-start" class="library-action" type="button">Set start</button>
+                  <span id="segment-start-time">Start not set</span>
+                  <button id="segment-mark-end" class="library-action" type="button">Set end</button>
+                  <span id="segment-end-time">End not set</span>
+                  <button id="save-segment" class="library-action" type="button" disabled>Save segment</button>
+                </div>
+                <div id="segment-list" class="segment-list"></div>
+              </div>
+            </section>
             <div class="subtitle-controls">
               <label class="subtitle-load" for="subtitle-input">Load subtitles</label>
               <input id="subtitle-input" type="file" accept=".vtt,.srt,text/vtt" hidden>
@@ -205,6 +240,7 @@
       </div>
     </section>
   </div>
+  <!-- Reused for destructive actions such as deleting a playlist or forgetting the library. -->
   <dialog id="confirm-dialog" class="confirm-dialog">
     <form method="dialog">
       <p id="confirm-message"></p>
@@ -214,6 +250,7 @@
       </div>
     </form>
   </dialog>
+  <!-- Load the application after its DOM targets are available. -->
   <script src="app.js"></script>
 </body>
 </html>

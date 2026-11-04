@@ -1,11 +1,15 @@
 (() => {
   "use strict";
 
+  // Configuration and shared in-memory state for the single-page app.
   const VIDEO_EXTENSIONS = /\.(mp4|m4v|mov|webm|ogv|ogg|mkv|avi|mpg|mpeg|wmv|3gp|mts|m2ts)$/i;
   const STORAGE_KEY = "localtube-library-v1";
   const PLAYLIST_STORAGE_KEY = "localtube-playlists-v1";
+  const METADATA_FILE = "localtube-metadata.json";
+  const METADATA_FORMAT = "localtube-metadata";
   const MEDIA_DATABASE = "localtube-media-v1";
   const MEDIA_STORE = "files";
+  const METADATA_STORE = "metadata";
   const byId = (id) => document.getElementById(id);
   const createIcon = (name, className = "icon") => {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -28,6 +32,7 @@
   const seekTrack = byId("seek-track");
   const seekPreview = byId("seek-preview");
   const seekPreviewVideo = byId("seek-preview-video");
+  const metadataInput = byId("metadata-input");
   const supportsDirectoryPicker = "webkitdirectory" in HTMLInputElement.prototype;
   let videos = [];
   let activeFilter = "all";
@@ -41,10 +46,14 @@
   let lastProgressSave = -1;
   let savedState = readSavedState();
   let playlists = readPlaylists();
+  let videoMetadata = {};
   let activePlaylistId = null;
   let playQueue = [];
   let queueIndex = -1;
   let shuffleEnabled = false;
+  let pendingSegmentStart = null;
+  let pendingSegmentEnd = null;
+  let playingSegment = null;
   let subtitleUrl = "";
   let persistenceNotice = "";
   let selectionGeneration = 0;
@@ -58,6 +67,7 @@
     byId("support-note").textContent = "Select multiple video files at once; folder selection is unavailable in this browser.";
   }
 
+  // Watch progress and playlists are small localStorage records, separate from video blobs.
   function readSavedState() {
     try {
       const state = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
@@ -142,6 +152,167 @@
     });
   }
 
+  function refreshPlayerMetadata() {
+    if (!activeVideo) return;
+    byId("player-title").textContent = activeVideo.title;
+    byId("custom-video-title").value = metadataFor(activeVideo).title || activeVideo.file.name.replace(VIDEO_EXTENSIONS, "");
+    updateVideoDetails(activeVideo);
+    renderVideoSegments();
+  }
+
+  function saveCustomTitle(title) {
+    if (!activeVideo) return;
+    const cleanTitle = title.trim().slice(0, 160);
+    const metadata = metadataFor(activeVideo);
+    metadata.title = cleanTitle;
+    videoMetadata[activeVideo.key] = metadata;
+    applyVideoMetadata(activeVideo);
+    refreshPlayerMetadata();
+    updateLibrary();
+    if (!playerModal.hidden) renderRecommendations(activeVideo);
+    saveMetadataChanges();
+    showStatus(cleanTitle ? "Custom video title saved." : "Using the original filename.");
+  }
+
+  function markSegmentBoundary(boundary) {
+    if (!activeVideo || !Number.isFinite(player.currentTime)) return;
+    if (boundary === "start") {
+      pendingSegmentStart = player.currentTime;
+      pendingSegmentEnd = null;
+    }
+    else if (pendingSegmentStart === null || player.currentTime <= pendingSegmentStart) {
+      showStatus("Set a segment start before setting an end time after it.");
+      return;
+    } else {
+      pendingSegmentEnd = player.currentTime;
+      byId("segment-end-time").textContent = formatTime(pendingSegmentEnd);
+      byId("save-segment").disabled = false;
+      return;
+    }
+    byId("segment-start-time").textContent = formatTime(pendingSegmentStart);
+    byId("segment-end-time").textContent = "End not set";
+    byId("save-segment").disabled = true;
+  }
+
+  function saveSegment() {
+    if (!activeVideo || pendingSegmentStart === null || pendingSegmentEnd === null ||
+        pendingSegmentEnd <= pendingSegmentStart) return;
+    const name = byId("segment-name").value.trim();
+    if (!name) {
+      showStatus("Enter a name for this segment.");
+      byId("segment-name").focus();
+      return;
+    }
+    const metadata = metadataFor(activeVideo);
+    metadata.segments.push({
+      id: typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      name: name.slice(0, 100),
+      start: pendingSegmentStart,
+      end: pendingSegmentEnd
+    });
+    metadata.segments.sort((left, right) => left.start - right.start);
+    videoMetadata[activeVideo.key] = metadata;
+    applyVideoMetadata(activeVideo);
+    pendingSegmentStart = null;
+    pendingSegmentEnd = null;
+    byId("segment-name").value = "";
+    byId("segment-start-time").textContent = "Start not set";
+    byId("segment-end-time").textContent = "End not set";
+    byId("save-segment").disabled = true;
+    renderVideoSegments();
+    saveMetadataChanges();
+    showStatus("Named segment saved.");
+  }
+
+  function playVideoSegment(segment) {
+    if (!activeVideo) return;
+    playingSegment = { videoKey: activeVideo.key, start: segment.start, end: segment.end };
+    player.currentTime = segment.start;
+    player.play().catch(error => console.info("Could not start the selected video segment.", error));
+  }
+
+  function renderVideoSegments() {
+    const list = byId("segment-list");
+    if (!list) return;
+    list.replaceChildren();
+    if (!activeVideo) return;
+    activeVideo.segments.forEach(segment => {
+      const row = document.createElement("div");
+      row.className = "segment-row";
+      const play = document.createElement("button");
+      play.type = "button";
+      play.className = "segment-play";
+      play.textContent = `${segment.name} · ${formatTime(segment.start)}–${formatTime(segment.end)}`;
+      play.addEventListener("click", () => playVideoSegment(segment));
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "segment-remove";
+      remove.textContent = "Remove";
+      remove.setAttribute("aria-label", `Remove segment ${segment.name}`);
+      remove.addEventListener("click", () => {
+        const metadata = metadataFor(activeVideo);
+        metadata.segments = metadata.segments.filter(item => item.id !== segment.id);
+        videoMetadata[activeVideo.key] = metadata;
+        applyVideoMetadata(activeVideo);
+        renderVideoSegments();
+        saveMetadataChanges();
+      });
+      row.append(play, remove);
+      list.append(row);
+    });
+  }
+
+  function setThumbnailFromCurrentFrame() {
+    if (!activeVideo || !player.videoWidth || !player.videoHeight ||
+        player.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      showStatus("Wait for a video frame to load before saving a thumbnail.");
+      return;
+    }
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = 480;
+      canvas.height = 270;
+      const context = canvas.getContext("2d", { alpha: false });
+      if (!context) throw new Error("Could not create a thumbnail canvas.");
+      const sourceRatio = player.videoWidth / player.videoHeight;
+      const targetRatio = canvas.width / canvas.height;
+      const sourceWidth = sourceRatio > targetRatio ? player.videoHeight * targetRatio : player.videoWidth;
+      const sourceHeight = sourceRatio > targetRatio ? player.videoHeight : player.videoWidth / targetRatio;
+      context.drawImage(
+        player,
+        (player.videoWidth - sourceWidth) / 2,
+        (player.videoHeight - sourceHeight) / 2,
+        sourceWidth,
+        sourceHeight,
+        0, 0, canvas.width, canvas.height
+      );
+      const thumbnail = canvas.toDataURL("image/jpeg", .82);
+      const metadata = metadataFor(activeVideo);
+      metadata.thumbnail = thumbnail;
+      videoMetadata[activeVideo.key] = metadata;
+      applyVideoMetadata(activeVideo);
+      updateLibrary();
+      renderRecommendations(activeVideo);
+      saveMetadataChanges();
+      showStatus(`Custom thumbnail saved at ${formatTime(player.currentTime)}.`);
+    } catch (error) {
+      console.warn("Could not capture the selected video frame as a thumbnail.", error);
+      showStatus("This frame could not be saved as a thumbnail.");
+    }
+  }
+
+  function resetCustomThumbnail() {
+    if (!activeVideo) return;
+    const metadata = metadataFor(activeVideo);
+    metadata.thumbnail = "";
+    videoMetadata[activeVideo.key] = metadata;
+    applyVideoMetadata(activeVideo);
+    updateLibrary();
+    renderRecommendations(activeVideo);
+    saveMetadataChanges();
+    showStatus("Custom thumbnail removed.");
+  }
+
   function showStatus(message) {
     status.textContent = message;
     status.hidden = !message;
@@ -151,20 +322,61 @@
     return `${file.webkitRelativePath || file.name}|${file.size}|${file.lastModified}`;
   }
 
+  // Keep selected file data in IndexedDB; object URLs are created only for the current page session.
   function openMediaDatabase() {
     return new Promise((resolve, reject) => {
       if (!("indexedDB" in window)) {
         reject(new Error("This browser does not support persistent local video storage."));
         return;
       }
-      const request = indexedDB.open(MEDIA_DATABASE, 1);
+      const request = indexedDB.open(MEDIA_DATABASE, 2);
       request.onupgradeneeded = () => {
         if (!request.result.objectStoreNames.contains(MEDIA_STORE)) {
           request.result.createObjectStore(MEDIA_STORE, { keyPath: "key" });
         }
+        if (!request.result.objectStoreNames.contains(METADATA_STORE)) {
+          request.result.createObjectStore(METADATA_STORE, { keyPath: "key" });
+        }
       };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error || new Error("Could not open the local video library."));
+    });
+  }
+
+  function readPersistedMetadata() {
+    return openMediaDatabase().then(database => new Promise((resolve, reject) => {
+      const transaction = database.transaction(METADATA_STORE, "readonly");
+      const request = transaction.objectStore(METADATA_STORE).get("video-metadata");
+      request.onsuccess = () => resolve(request.result?.value || {});
+      request.onerror = () => reject(request.error || new Error("Could not restore video metadata."));
+      transaction.oncomplete = () => database.close();
+      transaction.onerror = () => {
+        database.close();
+        reject(transaction.error || new Error("Could not restore video metadata."));
+      };
+    }));
+  }
+
+  function persistVideoMetadata() {
+    return openMediaDatabase().then(database => new Promise((resolve, reject) => {
+      const transaction = database.transaction(METADATA_STORE, "readwrite");
+      transaction.objectStore(METADATA_STORE).put({ key: "video-metadata", value: videoMetadata });
+      transaction.oncomplete = () => {
+        database.close();
+        resolve();
+      };
+      transaction.onerror = () => {
+        database.close();
+        reject(transaction.error || new Error("Could not save video metadata."));
+      };
+      transaction.onabort = () => {
+        database.close();
+        reject(transaction.error || new Error("Could not save video metadata."));
+      };
+    })).catch(error => {
+      console.warn("Could not save LocalTube video metadata.", error);
+      showStatus("Video metadata could not be saved in this browser. Export a metadata file to keep a portable copy.");
+      throw error;
     });
   }
 
@@ -220,6 +432,7 @@
     const clear = () => openMediaDatabase().then(database => new Promise((resolve, reject) => {
       const transaction = database.transaction(MEDIA_STORE, "readwrite");
       transaction.objectStore(MEDIA_STORE).clear();
+      transaction.objectStore(METADATA_STORE).clear();
       transaction.oncomplete = () => {
         database.close();
         resolve();
@@ -238,8 +451,102 @@
     return operation;
   }
 
-  function makeVideo(file, path = file.webkitRelativePath || file.name) {
+  function sanitizeVideoMetadata(record) {
+    if (!record || typeof record !== "object") return null;
+    const segments = Array.isArray(record.segments) ? record.segments.slice(0, 1000).filter(segment =>
+      segment && typeof segment.id === "string" && typeof segment.name === "string" &&
+      Number.isFinite(segment.start) && Number.isFinite(segment.end) && segment.start >= 0 && segment.end > segment.start
+    ).map(segment => ({
+      id: segment.id,
+      name: segment.name.slice(0, 100),
+      start: segment.start,
+      end: segment.end
+    })) : [];
     return {
+      title: typeof record.title === "string" ? record.title.slice(0, 160) : "",
+      segments,
+      thumbnail: typeof record.thumbnail === "string" &&
+        /^data:image\/jpeg;base64,[\da-z+/=]+$/i.test(record.thumbnail) &&
+        record.thumbnail.length <= 1_000_000 ? record.thumbnail : ""
+    };
+  }
+
+  function hasVideoMetadata(record) {
+    return Boolean(record && (record.title || record.segments.length || record.thumbnail));
+  }
+
+  function metadataFor(video) {
+    return videoMetadata[video.key] || { title: "", segments: [], thumbnail: "" };
+  }
+
+  function sanitizeMetadataMap(records) {
+    if (!records || typeof records !== "object" || Array.isArray(records)) return {};
+    return Object.fromEntries(Object.entries(records).flatMap(([key, record]) => {
+      const cleanRecord = sanitizeVideoMetadata(record);
+      return cleanRecord && key.length <= 2048 ? [[key, cleanRecord]] : [];
+    }));
+  }
+
+  function saveMetadataChanges() {
+    persistVideoMetadata().catch(() => {});
+  }
+
+  function serializeVideoMetadata() {
+    const records = {};
+    Object.entries(videoMetadata).forEach(([key, record]) => {
+      const cleanRecord = sanitizeVideoMetadata(record);
+      if (hasVideoMetadata(cleanRecord)) records[key] = cleanRecord;
+    });
+    return JSON.stringify({ format: METADATA_FORMAT, version: 1, videos: records }, null, 2);
+  }
+
+  async function importMetadataFile(file, notify = true) {
+    let imported;
+    try {
+      imported = JSON.parse(await file.text());
+    } catch (error) {
+      console.warn("Could not read the selected LocalTube metadata file.", error);
+      showStatus("The metadata file is not valid JSON.");
+      return false;
+    }
+    if (!imported || imported.format !== METADATA_FORMAT || imported.version !== 1 ||
+        !imported.videos || typeof imported.videos !== "object" || Array.isArray(imported.videos)) {
+      showStatus("This is not a supported LocalTube metadata file.");
+      return false;
+    }
+    Object.entries(imported.videos).forEach(([key, record]) => {
+      const cleanRecord = sanitizeVideoMetadata(record);
+      if (cleanRecord && key.length <= 2048) {
+        const existing = sanitizeVideoMetadata(videoMetadata[key]) || { title: "", segments: [], thumbnail: "" };
+        videoMetadata[key] = {
+          title: cleanRecord.title || existing.title,
+          segments: cleanRecord.segments.length ? cleanRecord.segments : existing.segments,
+          thumbnail: cleanRecord.thumbnail || existing.thumbnail
+        };
+      }
+    });
+    try { await persistVideoMetadata(); } catch { /* Keep imported metadata available for this session and export. */ }
+    videos.forEach(applyVideoMetadata);
+    if (!playerModal.hidden && activeVideo) refreshPlayerMetadata();
+    updateLibrary();
+    if (notify) showStatus("LocalTube metadata imported.");
+    return true;
+  }
+
+  function exportVideoMetadata() {
+    const blob = new Blob([serializeVideoMetadata()], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = METADATA_FILE;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showStatus(`Metadata exported as ${METADATA_FILE}. Save it beside your videos for a portable backup.`);
+  }
+
+  // Library lifecycle: build temporary media URLs, replace the active selection, and restore saved files.
+  function makeVideo(file, path = file.webkitRelativePath || file.name) {
+    const video = {
       file,
       url: URL.createObjectURL(file),
       key: stableKey(file),
@@ -249,8 +556,21 @@
       width: 0,
       height: 0,
       thumbnail: "",
+      generatedThumbnail: "",
+      customThumbnail: "",
+      segments: [],
       previewError: false
     };
+    applyVideoMetadata(video);
+    return video;
+  }
+
+  function applyVideoMetadata(video) {
+    const metadata = metadataFor(video);
+    video.title = metadata.title || video.file.name.replace(VIDEO_EXTENSIONS, "");
+    video.customThumbnail = metadata.thumbnail || "";
+    video.thumbnail = video.customThumbnail || video.generatedThumbnail || "";
+    video.segments = metadata.segments;
   }
 
   function releaseCurrentMedia() {
@@ -281,6 +601,12 @@
 
   async function restoreLibrary() {
     try {
+      try {
+        videoMetadata = sanitizeMetadataMap(await readPersistedMetadata());
+      } catch (error) {
+        console.warn("Could not restore saved LocalTube video metadata.", error);
+      }
+      if (selectionGeneration) return;
       const records = await readPersistedMedia();
       if (selectionGeneration || !records.length) return;
       const restored = records.map(record => {
@@ -301,6 +627,7 @@
     }
   }
 
+  // Import flow and the derived library view (filtering, sorting, and navigation).
   function chooseFolder() {
     fileInput.click();
   }
@@ -308,8 +635,15 @@
   byId("choose-folder").addEventListener("click", chooseFolder);
   byId("welcome-choose").addEventListener("click", chooseFolder);
   fileInput.addEventListener("change", async () => {
-    const files = Array.from(fileInput.files || []).filter(file => file.type.startsWith("video/") || VIDEO_EXTENSIONS.test(file.name));
+    const selectedFiles = Array.from(fileInput.files || []);
+    const metadataFile = selectedFiles.find(file => file.name.toLowerCase() === METADATA_FILE);
+    const files = selectedFiles.filter(file => file.type.startsWith("video/") || VIDEO_EXTENSIONS.test(file.name));
     if (!files.length) {
+      if (metadataFile) {
+        await importMetadataFile(metadataFile);
+        fileInput.value = "";
+        return;
+      }
       const welcomeStatus = byId("welcome-status");
       welcomeStatus.textContent = supportsDirectoryPicker
         ? "No video files found in that folder. Choose a folder with video files to get started."
@@ -319,6 +653,14 @@
     }
 
     const generation = ++selectionGeneration;
+    try {
+      videoMetadata = sanitizeMetadataMap(await readPersistedMetadata());
+    } catch (error) {
+      console.warn("Could not load saved video metadata before importing videos.", error);
+    }
+    if (generation !== selectionGeneration) return;
+    if (metadataFile) await importMetadataFile(metadataFile, false);
+    if (generation !== selectionGeneration) return;
     persistenceNotice = "";
     if (videos.length) {
       showStatus("Saving selected video files in this browser…");
@@ -344,6 +686,13 @@
 
   searchInput.addEventListener("input", updateLibrary);
   byId("sort").addEventListener("change", updateLibrary);
+  byId("export-metadata").addEventListener("click", exportVideoMetadata);
+  byId("import-metadata").addEventListener("click", () => metadataInput.click());
+  metadataInput.addEventListener("change", async () => {
+    const file = metadataInput.files && metadataInput.files[0];
+    metadataInput.value = "";
+    if (file) await importMetadataFile(file);
+  });
 
   function filteredVideos() {
     const term = searchInput.value.trim().toLocaleLowerCase();
@@ -399,6 +748,7 @@
     });
   }
 
+  // Playlist editing and queue state are kept in memory; playlist membership uses stable video keys.
   function showPlaylistForm() {
     const form = byId("playlist-form");
     form.hidden = false;
@@ -527,7 +877,7 @@
   }
 
   async function forgetLibrary() {
-    if (!videos.length || !await confirmAction("Remove the saved video files, playlists, and watch history from this browser?")) return;
+    if (!videos.length || !await confirmAction("Remove the saved video files, metadata, playlists, and watch history from this browser?")) return;
     try {
       await clearPersistedMedia();
     } catch (error) {
@@ -547,6 +897,7 @@
       selectionGeneration++;
       releaseCurrentMedia();
       videos = [];
+      videoMetadata = {};
       playlists = [];
       savedState = {};
       persistenceNotice = "";
@@ -598,6 +949,7 @@
     }
   }
 
+  // Bind library navigation after the render helpers are defined.
   document.querySelectorAll(".nav-item[data-filter]").forEach(item => {
     item.addEventListener("click", () => {
       activeFilter = item.dataset.filter;
@@ -719,6 +1071,7 @@
     return card;
   }
 
+  // Generate previews one video at a time so a single media element can be reused.
   function buildThumbnails(generation) {
     if (!videos.length) return;
     showStatus(`Creating previews… 0 of ${videos.length}`);
@@ -770,6 +1123,11 @@
     return new Promise(resolve => {
       let settled = false;
       let targetTime = 0;
+      let firstFrame = null;
+      let fallbackThumbnail = "";
+      let bestThumbnail = "";
+      let bestDetailScore = -1;
+      let additionalFrameChecks = 0;
       const finish = (thumbnail = "", duration = 0) => {
         if (settled) return;
         settled = true;
@@ -782,7 +1140,8 @@
         video.duration = Number.isFinite(duration) ? duration : 0;
         video.width = worker.videoWidth || 0;
         video.height = worker.videoHeight || 0;
-        video.thumbnail = thumbnail;
+        video.generatedThumbnail = thumbnail;
+        video.thumbnail = video.customThumbnail || thumbnail;
         resolve();
       };
       const captureFrame = () => {
@@ -817,9 +1176,84 @@
             sourceX, sourceY, sourceWidth, sourceHeight,
             0, 0, canvas.width, canvas.height
           );
-          finish(canvas.toDataURL("image/jpeg", .78), worker.duration);
+          const pixels = [];
+          const frame = context.getImageData(0, 0, canvas.width, canvas.height).data;
+          const colorCounts = new Uint16Array(4096);
+          for (let y = 0; y < canvas.height; y += 4) {
+            for (let x = 0; x < canvas.width; x += 4) {
+              const offset = (y * canvas.width + x) * 4;
+              const red = frame[offset];
+              const green = frame[offset + 1];
+              const blue = frame[offset + 2];
+              pixels.push(red, green, blue);
+              colorCounts[((red >> 4) << 8) | ((green >> 4) << 4) | (blue >> 4)]++;
+            }
+          }
+          const dominantColor = colorCounts.indexOf(Math.max(...colorCounts));
+          const dominantRed = ((dominantColor >> 8) & 15) * 16 + 8;
+          const dominantGreen = ((dominantColor >> 4) & 15) * 16 + 8;
+          const dominantBlue = (dominantColor & 15) * 16 + 8;
+          let similarPixels = 0;
+          for (let index = 0; index < pixels.length; index += 3) {
+            // Treat colors within 24 levels per RGB channel as similar; raise this to be more forgiving.
+            if (Math.abs(pixels[index] - dominantRed) <= 24 &&
+                Math.abs(pixels[index + 1] - dominantGreen) <= 24 &&
+                Math.abs(pixels[index + 2] - dominantBlue) <= 24) {
+              similarPixels++;
+            }
+          }
+          const thumbnail = canvas.toDataURL("image/jpeg", .78);
+          if (!firstFrame) {
+            // A mostly single-color opening frame may be a title card rather than useful video content.
+            const mostlyUniform = similarPixels / (pixels.length / 3) >= 0.9;
+            if (!mostlyUniform) {
+              finish(thumbnail, worker.duration);
+              return;
+            }
+            fallbackThumbnail = thumbnail;
+            firstFrame = pixels;
+            bestThumbnail = thumbnail;
+            bestDetailScore = 1 - similarPixels / (pixels.length / 3);
+          } else {
+            let changedPixels = 0;
+            for (let index = 0; index < pixels.length; index += 3) {
+              // Count pixels whose largest RGB-channel change exceeds 40 levels.
+              if (Math.max(
+                Math.abs(pixels[index] - firstFrame[index]),
+                Math.abs(pixels[index + 1] - firstFrame[index + 1]),
+                Math.abs(pixels[index + 2] - firstFrame[index + 2])
+              ) > 40) {
+                changedPixels++;
+              }
+            }
+            const changedRatio = changedPixels / (pixels.length / 3);
+            const detailScore = 1 - similarPixels / (pixels.length / 3);
+            // Prefer a changed frame with detail; keep searching if it is still mostly a title card.
+            if (changedRatio >= 0.1 && detailScore > bestDetailScore) {
+              bestThumbnail = thumbnail;
+              bestDetailScore = detailScore;
+            }
+            if (changedRatio >= 0.1 && detailScore > 0.1) {
+              finish(thumbnail, worker.duration);
+              return;
+            }
+          }
+
+          // Keep sampling short title cards, but cap the look-ahead so huge libraries stay responsive.
+          const nextTime = Math.min(targetTime + 5, worker.duration - 0.1);
+          if (additionalFrameChecks < 6 && Number.isFinite(nextTime) && nextTime > targetTime + 0.25) {
+            additionalFrameChecks++;
+            targetTime = nextTime;
+            worker.currentTime = targetTime;
+            return;
+          }
+          if (firstFrame) {
+            finish(bestThumbnail || fallbackThumbnail, worker.duration);
+          } else {
+            finish("", worker.duration);
+          }
         } catch {
-          finish("", worker.duration);
+          finish(bestThumbnail || fallbackThumbnail, worker.duration);
         }
       };
       const onMetadata = () => {
@@ -839,8 +1273,8 @@
       };
       const onLoadedData = () => captureFrame();
       const onSeeked = () => captureFrame();
-      const onError = () => finish("", worker.duration);
-      const timeout = setTimeout(() => finish("", worker.duration), 30000);
+      const onError = () => finish(bestThumbnail || fallbackThumbnail, worker.duration);
+      const timeout = setTimeout(() => finish(bestThumbnail || fallbackThumbnail, worker.duration), 30000);
       worker.addEventListener("loadedmetadata", onMetadata, { once: true });
       worker.addEventListener("loadeddata", onLoadedData, { once: true });
       worker.addEventListener("seeked", onSeeked);
@@ -868,6 +1302,7 @@
     byId("library-subtitle").textContent = `${videos.length} ${videos.length === 1 ? "video" : "videos"}${totalDuration ? ` · ${formatTime(totalDuration)} total` : ""}`;
   }
 
+  // Hover previews seek a temporary video element to the pointer position without starting playback.
   function getPointerFraction(thumb, event) {
     const rect = thumb.getBoundingClientRect();
     return Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
@@ -962,6 +1397,7 @@
     button.setAttribute("aria-label", button.title);
   }
 
+  // Recommendations use title/path token overlap and shared folders as lightweight local signals.
   function videoTokens(video) {
     const ignored = new Set(["the", "and", "for", "with", "from", "this", "that", "video", "clip", "final", "copy"]);
     return new Set(`${video.title} ${video.path}`.toLocaleLowerCase().split(/[^a-z0-9]+/).filter(token => token.length > 2 && !ignored.has(token)));
@@ -1055,11 +1491,14 @@
     byId("volume-toggle").classList.toggle("muted", player.muted || player.volume === 0);
   }
 
+  // Seek-bar helpers keep pointer and keyboard seeking in sync with the preview frame.
   function seekToPointer(event) {
     if (!Number.isFinite(player.duration) || !player.duration) return 0;
     const rect = seekTrack.getBoundingClientRect();
     const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-    player.currentTime = fraction * player.duration;
+    const target = fraction * player.duration;
+    if (playingSegment && (target < playingSegment.start || target >= playingSegment.end)) playingSegment = null;
+    player.currentTime = target;
     return fraction;
   }
 
@@ -1117,6 +1556,7 @@
     button.querySelector("use").setAttribute("href", fullscreen ? "#icon-fullscreen-exit" : "#icon-fullscreen");
   }
 
+  // Subtitle files are converted to WebVTT when needed and their temporary URL is revoked on replacement.
   function clearSubtitleTrack() {
     const track = byId("user-subtitle");
     if (track) track.remove();
@@ -1176,17 +1616,37 @@
     if (track) track.track.mode = event.target.value ? "showing" : "disabled";
   });
 
+  byId("video-title-form").addEventListener("submit", event => {
+    event.preventDefault();
+    saveCustomTitle(byId("custom-video-title").value);
+  });
+  byId("reset-video-title").addEventListener("click", () => saveCustomTitle(""));
+  byId("set-thumbnail").addEventListener("click", setThumbnailFromCurrentFrame);
+  byId("reset-thumbnail").addEventListener("click", resetCustomThumbnail);
+  byId("segment-mark-start").addEventListener("click", () => markSegmentBoundary("start"));
+  byId("segment-mark-end").addEventListener("click", () => markSegmentBoundary("end"));
+  byId("save-segment").addEventListener("click", saveSegment);
+
+  // Player lifecycle owns progress saving, active subtitle cleanup, and temporary video sources.
   function openPlayer(video, keepQueue = false) {
     if (activeVideo && activeVideo !== video) savePlaybackProgress();
     if (activeVideo !== video) clearSubtitleTrack();
     if (activeVideo !== video) lastProgressSave = -1;
+    pendingSegmentStart = null;
+    pendingSegmentEnd = null;
+    playingSegment = null;
     player.pause();
     if (!keepQueue) initializeQueue(video);
     else queueIndex = playQueue.indexOf(video);
     activeVideo = video;
+    byId("segment-start-time").textContent = "Start not set";
+    byId("segment-end-time").textContent = "End not set";
+    byId("save-segment").disabled = true;
     byId("player-title").textContent = video.title;
+    byId("custom-video-title").value = metadataFor(video).title || video.file.name.replace(VIDEO_EXTENSIONS, "");
     byId("player-file-info").textContent = video.path;
     updateVideoDetails(video);
+    renderVideoSegments();
     byId("player-description").textContent = `Playing from your local folder${video.path.includes("/") ? ` · ${video.path.slice(0, video.path.lastIndexOf("/"))}` : ""}. This file stays on your device.`;
     byId("player-error").hidden = true;
     playerShell.classList.remove("error", "controls-hidden");
@@ -1247,6 +1707,7 @@
     theaterToggle.querySelector(".button-label").textContent = "Theater";
     theaterToggle.querySelector("use").setAttribute("href", "#icon-theater");
     activeVideo = null;
+    playingSegment = null;
     updateLibrary();
   }
 
@@ -1264,6 +1725,7 @@
     persistState();
   }
 
+  // Player event wiring: controls, seeking, keyboard shortcuts, and periodic progress persistence.
   byId("close-player").addEventListener("click", closePlayer);
   byId("player-later").addEventListener("click", () => {
     if (activeVideo) toggleLater(activeVideo);
@@ -1351,6 +1813,12 @@
   });
   player.addEventListener("timeupdate", () => {
     if (!activeVideo) return;
+    if (playingSegment && playingSegment.videoKey === activeVideo.key && player.currentTime >= playingSegment.end) {
+      const segmentEnd = playingSegment.end;
+      playingSegment = null;
+      player.pause();
+      player.currentTime = segmentEnd;
+    }
     const saved = getSaved(activeVideo);
     savedState[activeVideo.key] = { ...saved, currentTime: player.currentTime };
     const second = Math.floor(player.currentTime);
@@ -1405,6 +1873,7 @@
     if (activeVideo) savePlaybackProgress();
     objectUrls.forEach(URL.revokeObjectURL);
   });
+  // Rebuild persistent playlist navigation before restoring the selected video files.
   renderPlaylists();
   restoreLibrary();
 })();
