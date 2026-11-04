@@ -735,7 +735,22 @@
       videos.push(loaded);
     });
     renderPlaylists();
-    updateLibrary();
+    // During the default import view, keep existing cards in place and append
+    // just the new batch. Rebuilding and sorting the entire grid for every
+    // batch made large libraries progressively slower to load.
+    if (activeFilter === "all" && !searchInput.value.trim() && byId("sort").value === "name") {
+      const fragment = document.createDocumentFragment();
+      videos.slice(-nextVideos.length).forEach(video => fragment.append(createCard(video)));
+      grid.append(fragment);
+      byId("all-count").textContent = loadingVideosTotal ? `${videos.length}/${loadingVideosTotal}` : videos.length || "";
+      byId("library-subtitle").textContent = loadingVideosTotal
+        ? `${videos.length} of ${loadingVideosTotal} videos loaded`
+        : `${videos.length} ${videos.length === 1 ? "video" : "videos"}`;
+      byId("forget-library").hidden = videos.length === 0;
+      byId("no-results").hidden = videos.length !== 0;
+    } else {
+      updateLibrary();
+    }
     observeVisibleVideoMetadata();
   }
 
