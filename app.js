@@ -33,12 +33,12 @@
   const seekPreview = byId("seek-preview");
   const seekPreviewVideo = byId("seek-preview-video");
   const metadataInput = byId("metadata-input");
-  const supportsDirectoryPicker = "webkitdirectory" in HTMLInputElement.prototype;
+  const supportsWebkitDirectoryInput = "webkitdirectory" in HTMLInputElement.prototype;
+  const supportsWritableDirectoryPicker = typeof window.showDirectoryPicker === "function";
   let videos = [];
   let activeFilter = "all";
   let activeVideo = null;
   let objectUrls = [];
-  let thumbGeneration = 0;
   let hoverGeneration = 0;
   let controlsTimer = 0;
   let draggingSeek = false;
@@ -58,13 +58,31 @@
   let persistenceNotice = "";
   let selectionGeneration = 0;
   let mediaWriteQueue = Promise.resolve();
+  let metadataDirectoryHandle = null;
+  let metadataSidecarWriteQueue = Promise.resolve();
+  let loadingVideosTotal = 0;
+  let videoMetadataObserver = null;
+  let metadataWorker = null;
+  let metadataQueue = [];
+  let metadataProcessing = false;
+  let metadataGeneration = 0;
+  let cancelActiveMetadataLoad = null;
+  let generatedMetadataDirty = false;
+  let metadataFallbackScroll = null;
 
-  if (!supportsDirectoryPicker) {
+  if (!supportsWebkitDirectoryInput) {
     fileInput.removeAttribute("webkitdirectory");
     fileInput.removeAttribute("directory");
+  }
+  if (!supportsWebkitDirectoryInput && !supportsWritableDirectoryPicker) {
     byId("choose-folder").querySelector(".button-label").textContent = "Choose videos";
     byId("welcome-choose").querySelector(".button-label").textContent = "Choose video files";
     byId("support-note").textContent = "Select multiple video files at once; folder selection is unavailable in this browser.";
+  }
+  if (supportsWritableDirectoryPicker) {
+    byId("support-note").textContent = "Choose a folder to automatically save metadata beside your videos. Video format support varies.";
+  } else {
+    byId("support-note").textContent += " Metadata stays in this browser; use Export metadata for a portable copy.";
   }
 
   // Watch progress and playlists are small localStorage records, separate from video blobs.
@@ -318,8 +336,8 @@
     status.hidden = !message;
   }
 
-  function stableKey(file) {
-    return `${file.webkitRelativePath || file.name}|${file.size}|${file.lastModified}`;
+  function stableKey(file, path = file.webkitRelativePath || file.name) {
+    return `${path}|${file.size}|${file.lastModified}`;
   }
 
   // Keep selected file data in IndexedDB; object URLs are created only for the current page session.
@@ -380,6 +398,41 @@
     });
   }
 
+  function readPersistedDirectoryHandle() {
+    return openMediaDatabase().then(database => new Promise((resolve, reject) => {
+      const transaction = database.transaction(METADATA_STORE, "readonly");
+      const request = transaction.objectStore(METADATA_STORE).get("metadata-directory");
+      request.onsuccess = () => resolve(request.result?.value || null);
+      request.onerror = () => reject(request.error || new Error("Could not restore the selected video folder."));
+      transaction.oncomplete = () => database.close();
+      transaction.onerror = () => {
+        database.close();
+        reject(transaction.error || new Error("Could not restore the selected video folder."));
+      };
+    }));
+  }
+
+  function persistDirectoryHandle(handle) {
+    return openMediaDatabase().then(database => new Promise((resolve, reject) => {
+      const transaction = database.transaction(METADATA_STORE, "readwrite");
+      const store = transaction.objectStore(METADATA_STORE);
+      if (handle) store.put({ key: "metadata-directory", value: handle });
+      else store.delete("metadata-directory");
+      transaction.oncomplete = () => {
+        database.close();
+        resolve();
+      };
+      transaction.onerror = () => {
+        database.close();
+        reject(transaction.error || new Error("Could not save the selected video folder."));
+      };
+      transaction.onabort = () => {
+        database.close();
+        reject(transaction.error || new Error("Could not save the selected video folder."));
+      };
+    }));
+  }
+
   function readPersistedMedia() {
     return openMediaDatabase().then(database => new Promise((resolve, reject) => {
       const transaction = database.transaction(MEDIA_STORE, "readonly");
@@ -394,14 +447,14 @@
     }));
   }
 
-  function storePersistedMedia(files) {
-    const records = files.map(file => ({
-      key: stableKey(file),
+  function storePersistedMedia(entries) {
+    const records = entries.map(({ file, path }) => ({
+      key: stableKey(file, path),
       blob: file,
       name: file.name,
       type: file.type,
       lastModified: file.lastModified,
-      path: file.webkitRelativePath || file.name
+      path
     }));
     const write = () => openMediaDatabase().then(database => new Promise((resolve, reject) => {
       const transaction = database.transaction(MEDIA_STORE, "readwrite");
@@ -428,27 +481,38 @@
     return operation;
   }
 
-  function clearPersistedMedia() {
+  function clearPersistedMedia(clearMetadata = true) {
     const clear = () => openMediaDatabase().then(database => new Promise((resolve, reject) => {
-      const transaction = database.transaction(MEDIA_STORE, "readwrite");
-      transaction.objectStore(MEDIA_STORE).clear();
-      transaction.objectStore(METADATA_STORE).clear();
-      transaction.oncomplete = () => {
+      const storeNames = clearMetadata ? [MEDIA_STORE, METADATA_STORE] : [MEDIA_STORE];
+      let transaction;
+      try {
+        transaction = database.transaction(storeNames, "readwrite");
+        transaction.oncomplete = () => {
+          database.close();
+          resolve();
+        };
+        transaction.onerror = () => {
+          database.close();
+          reject(transaction.error || new Error("Could not remove the saved videos."));
+        };
+        transaction.onabort = () => {
+          database.close();
+          reject(transaction.error || new Error("Could not remove the saved videos."));
+        };
+        storeNames.forEach(name => transaction.objectStore(name).clear());
+      } catch (error) {
         database.close();
-        resolve();
-      };
-      transaction.onerror = () => {
-        database.close();
-        reject(transaction.error || new Error("Could not remove the saved videos."));
-      };
-      transaction.onabort = () => {
-        database.close();
-        reject(transaction.error || new Error("Could not remove the saved videos."));
-      };
+        reject(error);
+      }
     }));
     const operation = mediaWriteQueue.then(clear);
     mediaWriteQueue = operation.catch(error => console.warn("Could not clear the local video library.", error));
     return operation;
+  }
+
+  function isPageRefresh() {
+    const navigation = performance.getEntriesByType("navigation")[0];
+    return navigation ? navigation.type === "reload" : performance.navigation?.type === 1;
   }
 
   function sanitizeVideoMetadata(record) {
@@ -462,21 +526,39 @@
       start: segment.start,
       end: segment.end
     })) : [];
+    const validThumbnail = thumbnail => typeof thumbnail === "string" &&
+      /^data:image\/jpeg;base64,[\da-z+/=]+$/i.test(thumbnail) &&
+      thumbnail.length <= 1_000_000 ? thumbnail : "";
     return {
       title: typeof record.title === "string" ? record.title.slice(0, 160) : "",
       segments,
-      thumbnail: typeof record.thumbnail === "string" &&
-        /^data:image\/jpeg;base64,[\da-z+/=]+$/i.test(record.thumbnail) &&
-        record.thumbnail.length <= 1_000_000 ? record.thumbnail : ""
+      thumbnail: validThumbnail(record.thumbnail),
+      defaultThumbnail: validThumbnail(record.defaultThumbnail),
+      duration: Number.isFinite(record.duration) && record.duration > 0 ? Math.min(record.duration, 1_000_000_000) : 0,
+      width: Number.isInteger(record.width) && record.width > 0 && record.width <= 100_000 ? record.width : 0,
+      height: Number.isInteger(record.height) && record.height > 0 && record.height <= 100_000 ? record.height : 0,
+      mediaMetadataLoaded: record.mediaMetadataLoaded === true
     };
   }
 
   function hasVideoMetadata(record) {
-    return Boolean(record && (record.title || record.segments.length || record.thumbnail));
+    return Boolean(record && (
+      record.title || record.segments.length || record.thumbnail || record.defaultThumbnail ||
+      record.duration || record.width || record.height
+    ));
   }
 
   function metadataFor(video) {
-    return videoMetadata[video.key] || { title: "", segments: [], thumbnail: "" };
+    return videoMetadata[video.key] || {
+      title: "",
+      segments: [],
+      thumbnail: "",
+      defaultThumbnail: "",
+      duration: 0,
+      width: 0,
+      height: 0,
+      mediaMetadataLoaded: false
+    };
   }
 
   function sanitizeMetadataMap(records) {
@@ -489,15 +571,49 @@
 
   function saveMetadataChanges() {
     persistVideoMetadata().catch(() => {});
+    saveMetadataSidecar();
   }
 
-  function serializeVideoMetadata() {
+  function serializeVideoMetadata(onlyVideos = null) {
     const records = {};
-    Object.entries(videoMetadata).forEach(([key, record]) => {
+    const entries = onlyVideos
+      ? onlyVideos.map(video => [video.key, videoMetadata[video.key]])
+      : Object.entries(videoMetadata);
+    entries.forEach(([key, record]) => {
       const cleanRecord = sanitizeVideoMetadata(record);
       if (hasVideoMetadata(cleanRecord)) records[key] = cleanRecord;
     });
     return JSON.stringify({ format: METADATA_FORMAT, version: 1, videos: records }, null, 2);
+  }
+
+  function saveMetadataSidecar() {
+    if (!metadataDirectoryHandle) return Promise.resolve();
+    const directoryHandle = metadataDirectoryHandle;
+    const contents = serializeVideoMetadata(videos);
+    const operation = metadataSidecarWriteQueue.then(async () => {
+      const permission = await directoryHandle.queryPermission({ mode: "readwrite" });
+      if (permission !== "granted") {
+        throw new Error("Write permission for the selected video folder is no longer available.");
+      }
+      const fileHandle = await directoryHandle.getFileHandle(METADATA_FILE, { create: true });
+      const writable = await fileHandle.createWritable();
+      try {
+        await writable.write(contents);
+        await writable.close();
+      } catch (error) {
+        try {
+          await writable.abort();
+        } catch (abortError) {
+          console.warn("Could not discard the incomplete LocalTube metadata sidecar.", abortError);
+        }
+        throw error;
+      }
+    });
+    metadataSidecarWriteQueue = operation.catch(error => {
+      console.warn("Could not save the LocalTube metadata sidecar.", error);
+      showStatus("Metadata could not be saved beside the videos. Check folder permissions or use Export metadata.");
+    });
+    return metadataSidecarWriteQueue;
   }
 
   async function importMetadataFile(file, notify = true) {
@@ -517,11 +633,16 @@
     Object.entries(imported.videos).forEach(([key, record]) => {
       const cleanRecord = sanitizeVideoMetadata(record);
       if (cleanRecord && key.length <= 2048) {
-        const existing = sanitizeVideoMetadata(videoMetadata[key]) || { title: "", segments: [], thumbnail: "" };
+        const existing = sanitizeVideoMetadata(videoMetadata[key]) || metadataFor({ key });
         videoMetadata[key] = {
           title: cleanRecord.title || existing.title,
           segments: cleanRecord.segments.length ? cleanRecord.segments : existing.segments,
-          thumbnail: cleanRecord.thumbnail || existing.thumbnail
+          thumbnail: cleanRecord.thumbnail || existing.thumbnail,
+          defaultThumbnail: cleanRecord.defaultThumbnail || existing.defaultThumbnail,
+          duration: cleanRecord.duration || existing.duration,
+          width: cleanRecord.width || existing.width,
+          height: cleanRecord.height || existing.height,
+          mediaMetadataLoaded: cleanRecord.mediaMetadataLoaded || existing.mediaMetadataLoaded
         };
       }
     });
@@ -529,6 +650,7 @@
     videos.forEach(applyVideoMetadata);
     if (!playerModal.hidden && activeVideo) refreshPlayerMetadata();
     updateLibrary();
+    if (notify) saveMetadataSidecar();
     if (notify) showStatus("LocalTube metadata imported.");
     return true;
   }
@@ -549,17 +671,20 @@
     const video = {
       file,
       url: URL.createObjectURL(file),
-      key: stableKey(file),
+      key: stableKey(file, path),
       title: file.name.replace(VIDEO_EXTENSIONS, ""),
       path,
       duration: 0,
       width: 0,
       height: 0,
       thumbnail: "",
-      generatedThumbnail: "",
       customThumbnail: "",
+      defaultThumbnail: "",
+      mediaMetadataLoaded: false,
+      metadataPending: false,
+      metadataError: false,
+      thumbnailError: false,
       segments: [],
-      previewError: false
     };
     applyVideoMetadata(video);
     return video;
@@ -569,12 +694,17 @@
     const metadata = metadataFor(video);
     video.title = metadata.title || video.file.name.replace(VIDEO_EXTENSIONS, "");
     video.customThumbnail = metadata.thumbnail || "";
-    video.thumbnail = video.customThumbnail || video.generatedThumbnail || "";
+    video.defaultThumbnail = metadata.defaultThumbnail || "";
+    video.thumbnail = video.customThumbnail || video.defaultThumbnail;
+    video.duration = metadata.duration || 0;
+    video.width = metadata.width || 0;
+    video.height = metadata.height || 0;
+    video.mediaMetadataLoaded = Boolean(metadata.mediaMetadataLoaded || video.duration);
     video.segments = metadata.segments;
   }
 
   function releaseCurrentMedia() {
-    thumbGeneration++;
+    stopVideoMetadataLoading();
     hoverGeneration++;
     objectUrls.forEach(URL.revokeObjectURL);
     objectUrls = [];
@@ -590,21 +720,47 @@
     });
     activeFilter = "all";
     activePlaylistId = null;
-    document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.filter === "all"));
     renderPlaylists();
     welcome.hidden = true;
     library.hidden = false;
     searchInput.value = "";
     updateLibrary();
-    buildThumbnails(thumbGeneration);
+    buildVideoMetadataObserver();
+  }
+
+  function appendLibraryVideos(nextVideos) {
+    nextVideos.forEach(video => {
+      const loaded = makeVideo(video.file, video.path);
+      objectUrls.push(loaded.url);
+      videos.push(loaded);
+    });
+    renderPlaylists();
+    updateLibrary();
+    observeVisibleVideoMetadata();
   }
 
   async function restoreLibrary() {
+    let metadataPermissionNotice = "";
     try {
+      if (!isPageRefresh()) await clearPersistedMedia(false);
       try {
         videoMetadata = sanitizeMetadataMap(await readPersistedMetadata());
       } catch (error) {
         console.warn("Could not restore saved LocalTube video metadata.", error);
+      }
+      if (selectionGeneration) return;
+      try {
+        const directoryHandle = await readPersistedDirectoryHandle();
+        if (directoryHandle) {
+          if (await directoryHandle.queryPermission({ mode: "readwrite" }) === "granted") {
+            metadataDirectoryHandle = directoryHandle;
+          } else {
+            metadataPermissionNotice = "Choose the video folder again to resume automatic metadata saving.";
+          }
+        }
+      } catch (error) {
+        console.warn("Could not restore automatic metadata saving for the selected folder.", error);
+        metadataPermissionNotice = "Choose the video folder again to resume automatic metadata saving.";
       }
       if (selectionGeneration) return;
       const records = await readPersistedMedia();
@@ -620,6 +776,7 @@
       if (!restored.length) return;
       persistenceNotice = "";
       activateLibrary(restored);
+      if (metadataPermissionNotice) showStatus(metadataPermissionNotice);
     } catch (error) {
       console.warn("Could not restore the saved LocalTube library.", error);
       byId("welcome-status").textContent = "The saved library could not be restored. Choose your video folder again.";
@@ -628,8 +785,179 @@
   }
 
   // Import flow and the derived library view (filtering, sorting, and navigation).
-  function chooseFolder() {
-    fileInput.click();
+  async function collectDirectoryVideos(directoryHandle) {
+    const fileHandles = [];
+    let metadataFile = null;
+    async function visit(handle, relativePath) {
+      const directories = [];
+      for await (const [name, entry] of handle.entries()) {
+        if (entry.kind === "directory") {
+          directories.push(visit(entry, `${relativePath}${name}/`));
+        } else if (entry.kind === "file") {
+          if (handle === directoryHandle && name.toLowerCase() === METADATA_FILE) {
+            metadataFile = await entry.getFile();
+          } else if (VIDEO_EXTENSIONS.test(name)) {
+            fileHandles.push({ handle: entry, path: `${relativePath}${name}` });
+          }
+        }
+      }
+      await Promise.all(directories);
+    }
+    await visit(directoryHandle, `${directoryHandle.name}/`);
+    return { fileHandles, metadataFile };
+  }
+
+  async function readDirectoryFileBatch(fileHandles) {
+    const entries = new Array(fileHandles.length);
+    let nextIndex = 0;
+    const readFiles = async () => {
+      while (nextIndex < fileHandles.length) {
+        const index = nextIndex++;
+        const { handle, path } = fileHandles[index];
+        entries[index] = { file: await handle.getFile(), path };
+      }
+    };
+    await Promise.all(Array.from(
+      { length: Math.min(8, fileHandles.length) },
+      readFiles
+    ));
+    return entries;
+  }
+
+  async function loadDirectoryVideos(fileHandles, metadataFile, directoryHandle) {
+    stopVideoMetadataLoading();
+    const generation = ++selectionGeneration;
+    try {
+      videoMetadata = sanitizeMetadataMap(await readPersistedMetadata());
+    } catch (error) {
+      console.warn("Could not load saved video metadata before importing videos.", error);
+    }
+    if (generation !== selectionGeneration) return;
+    if (metadataFile) await importMetadataFile(metadataFile, false);
+    if (generation !== selectionGeneration) return;
+
+    const firstBatchSize = Math.min(24, fileHandles.length);
+    const entries = await readDirectoryFileBatch(fileHandles.slice(0, firstBatchSize));
+    if (generation !== selectionGeneration) return;
+    loadingVideosTotal = fileHandles.length;
+    persistenceNotice = "";
+    activateLibrary(entries);
+    metadataDirectoryHandle = directoryHandle;
+    showStatus(`Loading videos… ${entries.length} of ${loadingVideosTotal}`);
+
+    for (let offset = firstBatchSize; offset < fileHandles.length; offset += 32) {
+      const nextEntries = await readDirectoryFileBatch(fileHandles.slice(offset, offset + 32));
+      if (generation !== selectionGeneration) return;
+      entries.push(...nextEntries);
+      appendLibraryVideos(nextEntries);
+      showStatus(`Loading videos… ${entries.length} of ${loadingVideosTotal}`);
+    }
+
+    loadingVideosTotal = 0;
+    updateLibrary();
+    persistenceNotice = "Saving video files for this tab session…";
+    showStatus(persistenceNotice);
+    Promise.resolve().then(() => storePersistedMedia(entries)).then(() => {
+      if (generation !== selectionGeneration) return;
+      persistenceNotice = "";
+      showStatus("Video files are saved for this tab session and will be available after a refresh.");
+      processNextVideoMetadata(metadataGeneration);
+    }).catch(error => {
+      console.warn("The selected videos could not be retained after refresh.", error);
+      if (generation !== selectionGeneration) return;
+      persistenceNotice = "Videos are available for this visit, but the browser could not retain them after refresh. Check available storage and browser permissions.";
+      showStatus(persistenceNotice);
+      processNextVideoMetadata(metadataGeneration);
+    });
+    persistDirectoryHandle(directoryHandle).catch(error => {
+      console.warn("Could not remember the selected LocalTube folder.", error);
+      if (generation !== selectionGeneration) return;
+      showStatus("Metadata can be saved beside your videos during this visit, but the folder could not be remembered for next time.");
+    });
+  }
+
+  async function loadVideoEntries(entries, metadataFile, directoryHandle = null) {
+    stopVideoMetadataLoading();
+    const generation = ++selectionGeneration;
+    try {
+      videoMetadata = sanitizeMetadataMap(await readPersistedMetadata());
+    } catch (error) {
+      console.warn("Could not load saved video metadata before importing videos.", error);
+    }
+    if (generation !== selectionGeneration) return;
+    if (metadataFile) await importMetadataFile(metadataFile, false);
+    if (generation !== selectionGeneration) return;
+    persistenceNotice = "Saving video files for this tab session…";
+    loadingVideosTotal = 0;
+    if (videos.length) {
+      showStatus(persistenceNotice);
+    } else {
+      byId("welcome-status").textContent = persistenceNotice;
+      byId("welcome-status").hidden = false;
+    }
+    byId("welcome-status").hidden = true;
+    activateLibrary(entries);
+    metadataDirectoryHandle = directoryHandle;
+    Promise.resolve().then(() => storePersistedMedia(entries)).then(() => {
+      if (generation !== selectionGeneration) return;
+      persistenceNotice = "";
+      showStatus("Video files are saved for this tab session and will be available after a refresh.");
+      processNextVideoMetadata(metadataGeneration);
+    }).catch(error => {
+      console.warn("The selected videos could not be retained after refresh.", error);
+      if (generation !== selectionGeneration) return;
+      persistenceNotice = "Videos are available for this visit, but the browser could not retain them after refresh. Check available storage and browser permissions.";
+      showStatus(persistenceNotice);
+      processNextVideoMetadata(metadataGeneration);
+    });
+    persistDirectoryHandle(directoryHandle).catch(error => {
+      console.warn("Could not remember the selected LocalTube folder.", error);
+      if (generation !== selectionGeneration) return;
+      if (directoryHandle) {
+        showStatus("Metadata can be saved beside your videos during this visit, but the folder could not be remembered for next time.");
+      } else if (!metadataDirectoryHandle) {
+        showStatus("The previous folder permission could not be cleared from browser storage. Choose the new folder again if automatic saving resumes in the wrong location.");
+      }
+    });
+  }
+
+  async function chooseFolder() {
+    if (!supportsWritableDirectoryPicker) {
+      fileInput.click();
+      return;
+    }
+    let directoryHandle;
+    try {
+      directoryHandle = await window.showDirectoryPicker({ mode: "readwrite" });
+    } catch (error) {
+      if (error.name !== "AbortError") {
+        console.warn("Could not open the LocalTube video folder.", error);
+        showStatus("The video folder could not be opened. Check browser permissions and try again.");
+      }
+      return;
+    }
+    try {
+      if (library.hidden) {
+        byId("welcome-status").textContent = "Reading video files in that folder…";
+        byId("welcome-status").hidden = false;
+      } else {
+        showStatus("Reading video files in that folder…");
+      }
+      const { fileHandles, metadataFile } = await collectDirectoryVideos(directoryHandle);
+      if (!fileHandles.length) {
+        if (library.hidden) {
+          byId("welcome-status").textContent = "No video files found in that folder. Choose a folder with video files to get started.";
+          byId("welcome-status").hidden = false;
+        } else {
+          showStatus("No video files were found in that folder. Your current library is unchanged.");
+        }
+        return;
+      }
+      await loadDirectoryVideos(fileHandles, metadataFile, directoryHandle);
+    } catch (error) {
+      console.warn("Could not read the selected LocalTube video folder.", error);
+      showStatus("The selected folder could not be read. Check browser permissions and try again.");
+    }
   }
 
   byId("choose-folder").addEventListener("click", chooseFolder);
@@ -645,42 +973,16 @@
         return;
       }
       const welcomeStatus = byId("welcome-status");
-      welcomeStatus.textContent = supportsDirectoryPicker
+      welcomeStatus.textContent = supportsWebkitDirectoryInput
         ? "No video files found in that folder. Choose a folder with video files to get started."
         : "No video files selected. Choose one or more video files to get started.";
       welcomeStatus.hidden = false;
       return;
     }
-
-    const generation = ++selectionGeneration;
-    try {
-      videoMetadata = sanitizeMetadataMap(await readPersistedMetadata());
-    } catch (error) {
-      console.warn("Could not load saved video metadata before importing videos.", error);
-    }
-    if (generation !== selectionGeneration) return;
-    if (metadataFile) await importMetadataFile(metadataFile, false);
-    if (generation !== selectionGeneration) return;
-    persistenceNotice = "";
-    if (videos.length) {
-      showStatus("Saving selected video files in this browser…");
-    } else {
-      byId("welcome-status").textContent = "Saving selected video files in this browser…";
-      byId("welcome-status").hidden = false;
-    }
-    let persistenceFailed = false;
-    try {
-      await storePersistedMedia(files);
-    } catch (error) {
-      console.warn("The selected videos could not be retained after refresh.", error);
-      persistenceFailed = true;
-    }
-    if (generation !== selectionGeneration) return;
-    persistenceNotice = persistenceFailed
-      ? "Videos are available for this visit, but the browser could not retain them after refresh. Check available storage and browser permissions."
-      : "";
-    byId("welcome-status").hidden = true;
-    activateLibrary(files.map(file => ({ file, path: file.webkitRelativePath || file.name })));
+    await loadVideoEntries(
+      files.map(file => ({ file, path: file.webkitRelativePath || file.name })),
+      metadataFile
+    );
     fileInput.value = "";
   });
 
@@ -728,13 +1030,12 @@
       button.type = "button";
       button.className = "nav-item playlist-nav-item";
       button.textContent = playlist.name;
+      button.dataset.playlistId = playlist.id;
       button.disabled = videos.length === 0;
-      button.classList.toggle("active", activeFilter === "playlist" && activePlaylistId === playlist.id);
-      button.setAttribute("aria-current", activeFilter === "playlist" && activePlaylistId === playlist.id ? "page" : "false");
       button.addEventListener("click", () => {
         activeFilter = "playlist";
         activePlaylistId = playlist.id;
-        document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item === button));
+        syncNavigation();
         updateLibrary();
       });
       const remove = document.createElement("button");
@@ -745,6 +1046,18 @@
       remove.addEventListener("click", () => deletePlaylist(playlist.id));
       row.append(button, remove);
       list.append(row);
+    });
+    syncNavigation();
+  }
+
+  function syncNavigation() {
+    document.querySelectorAll(".sidebar .nav-item").forEach(item => {
+      const selected = item.dataset.filter
+        ? item.dataset.filter === activeFilter
+        : activeFilter === "playlist" && item.dataset.playlistId === activePlaylistId;
+      item.classList.toggle("active", selected);
+      if (selected) item.setAttribute("aria-current", "page");
+      else item.removeAttribute("aria-current");
     });
   }
 
@@ -790,7 +1103,6 @@
     if (activePlaylistId === id) {
       activePlaylistId = null;
       activeFilter = "all";
-      document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.filter === "all"));
     }
     persistPlaylists();
     renderPlaylists();
@@ -878,11 +1190,12 @@
 
   async function forgetLibrary() {
     if (!videos.length || !await confirmAction("Remove the saved video files, metadata, playlists, and watch history from this browser?")) return;
+    stopVideoMetadataLoading(false);
     try {
       await clearPersistedMedia();
     } catch (error) {
       console.warn("Could not forget the saved LocalTube video files.", error);
-      showStatus("The saved video files could not be removed. Check browser storage permissions and try again.");
+      showStatus(`The saved video files could not be removed. ${error.message || "Check browser storage and try again."}`);
       return;
     }
     let removalWarning = "";
@@ -897,7 +1210,9 @@
       selectionGeneration++;
       releaseCurrentMedia();
       videos = [];
+      loadingVideosTotal = 0;
       videoMetadata = {};
+      metadataDirectoryHandle = null;
       playlists = [];
       savedState = {};
       persistenceNotice = "";
@@ -908,7 +1223,6 @@
       grid.replaceChildren();
       byId("all-count").textContent = "";
       showStatus("");
-      document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.filter === "all"));
       renderPlaylists();
       library.hidden = true;
       welcome.hidden = false;
@@ -926,12 +1240,13 @@
     const playlist = activeFilter === "playlist" ? playlists.find(item => item.id === activePlaylistId) : null;
     const title = playlist ? playlist.name : (labels[activeFilter] || labels.all);
     byId("page-title").textContent = title;
-    byId("library-eyebrow").textContent = activeFilter === "all" ? "YOUR LIBRARY" : activeFilter === "playlist" ? "YOUR PLAYLIST" : "YOUR COLLECTION";
-    byId("all-count").textContent = videos.length || "";
+    byId("all-count").textContent = loadingVideosTotal ? `${videos.length}/${loadingVideosTotal}` : videos.length || "";
     const filtered = filteredVideos();
     const totalDuration = videos.reduce((sum, video) => sum + (video.duration || 0), 0);
-    byId("library-subtitle").textContent = activeFilter === "all"
-      ? `${videos.length} ${videos.length === 1 ? "video" : "videos"}${totalDuration ? ` · ${formatTime(totalDuration)} total` : ""}`
+    byId("library-subtitle").textContent = loadingVideosTotal
+      ? `${videos.length} of ${loadingVideosTotal} videos loaded`
+      : activeFilter === "all"
+        ? `${videos.length} ${videos.length === 1 ? "video" : "videos"}${totalDuration ? ` · ${formatTime(totalDuration)} total` : ""}`
       : `${filtered.length} ${filtered.length === 1 ? "video" : "videos"}`;
     byId("shuffle-playlist").hidden = !playlist || !filtered.length;
     byId("delete-active-playlist").hidden = !playlist;
@@ -939,6 +1254,7 @@
     byId("browse-library").hidden = !playlist || playlist.videoKeys.length > 0;
     grid.replaceChildren();
     filtered.forEach(video => grid.append(createCard(video)));
+    observeVisibleVideoMetadata();
     byId("no-results").hidden = filtered.length !== 0;
     if (!filtered.length && videos.length) {
       const message = activeFilter === "watchlater" ? "Add videos to Watch later using the bookmark button." :
@@ -954,7 +1270,7 @@
     item.addEventListener("click", () => {
       activeFilter = item.dataset.filter;
       activePlaylistId = null;
-      document.querySelectorAll(".nav-item").forEach(nav => nav.classList.toggle("active", nav === item));
+      syncNavigation();
       updateLibrary();
     });
   });
@@ -974,7 +1290,7 @@
   byId("browse-library").addEventListener("click", () => {
     activeFilter = "all";
     activePlaylistId = null;
-    document.querySelectorAll(".nav-item").forEach(item => item.classList.toggle("active", item.dataset.filter === "all"));
+    syncNavigation();
     updateLibrary();
   });
 
@@ -1056,7 +1372,7 @@
     title.title = video.title;
     const meta = document.createElement("div");
     meta.className = "video-meta";
-    meta.textContent = `${video.path.includes("/") ? video.path.slice(0, video.path.lastIndexOf("/")) : formatSize(video.file.size)}${video.path.includes("/") ? ` · ${formatSize(video.file.size)}` : ""}`;
+    meta.textContent = videoCardMetadata(video);
     text.append(title, meta);
     details.append(avatar, text);
     card.append(thumb, details);
@@ -1071,85 +1387,186 @@
     return card;
   }
 
-  // Generate previews one video at a time so a single media element can be reused.
-  function buildThumbnails(generation) {
-    if (!videos.length) return;
-    showStatus(`Creating previews… 0 of ${videos.length}`);
-    const worker = document.createElement("video");
-    worker.muted = true;
-    worker.preload = "metadata";
-    let index = 0;
-    let unavailable = 0;
-
-    const loadNext = () => {
-      if (generation !== thumbGeneration) {
-        worker.removeAttribute("src");
-        worker.load();
-        return;
-      }
-      if (index >= videos.length) {
-        worker.removeAttribute("src");
-        worker.load();
-        updateLibrary();
-        const previewMessage = unavailable
-          ? `Previews unavailable for ${unavailable} ${unavailable === 1 ? "video" : "videos"}. The browser may not support ${unavailable === 1 ? "its" : "their"} format.`
-          : "";
-        showStatus([previewMessage, persistenceNotice].filter(Boolean).join(" "));
-        return;
-      }
-      const video = videos[index++];
-      processThumbnail(worker, video).then(() => {
-        if (generation !== thumbGeneration) return;
-        if (video.previewError) unavailable++;
-        const card = Array.from(grid.children).find(element => element.dataset.videoKey === video.key);
-        if (card) updateCardThumbnail(card, video);
-        if (activeVideo === video) updateVideoDetails(video);
-        if (activeVideo && !playerModal.hidden) renderRecommendations(activeVideo);
-        showStatus(`Creating previews… ${index} of ${videos.length}${persistenceNotice ? ` · ${persistenceNotice}` : ""}`);
-        updateLibrarySubtitle();
-        loadNext();
-      }).catch(error => {
-        if (generation !== thumbGeneration) return;
-        console.info(`Preview unavailable for ${video.file.name}:`, error);
-        unavailable++;
-        showStatus(`Creating previews… ${index} of ${videos.length}${persistenceNotice ? ` · ${persistenceNotice}` : ""}`);
-        loadNext();
-      });
-    };
-    loadNext();
+  function updateCardDuration(card, video) {
+    card.querySelector(".duration-badge").textContent = video.duration ? formatTime(video.duration) : "--:--";
   }
 
-  function processThumbnail(worker, video) {
+  function videoCardMetadata(video) {
+    const folder = video.path.includes("/") ? video.path.slice(0, video.path.lastIndexOf("/")) : "";
+    return [
+      formatSize(video.file.size),
+      video.width && video.height ? `${video.width} × ${video.height}` : "",
+      folder
+    ].filter(Boolean).join(" · ");
+  }
+
+  function updateCardThumbnail(card, video) {
+    const image = card.querySelector(".thumb-image");
+    const skeleton = card.querySelector(".thumb-skeleton");
+    if (video.thumbnail) {
+      image.src = video.thumbnail;
+      image.hidden = false;
+      skeleton.hidden = true;
+    } else {
+      image.removeAttribute("src");
+      image.hidden = true;
+      skeleton.hidden = false;
+    }
+    card.querySelector(".video-meta").textContent = videoCardMetadata(video);
+    updateCardDuration(card, video);
+  }
+
+  function buildVideoMetadataObserver() {
+    stopVideoMetadataLoading();
+    if (!videos.length) return;
+    const generation = metadataGeneration;
+    metadataWorker = document.createElement("video");
+    metadataWorker.muted = true;
+    metadataWorker.preload = "metadata";
+    if ("IntersectionObserver" in window) {
+      videoMetadataObserver = new IntersectionObserver(entries => {
+        if (generation !== metadataGeneration) return;
+        entries.forEach(entry => {
+          if (!entry.isIntersecting) return;
+          videoMetadataObserver.unobserve(entry.target);
+          const card = entry.target.closest(".video-card");
+          const video = videos.find(candidate => candidate.key === card?.dataset.videoKey);
+          if (!video || video.metadataPending || video.metadataError || video.thumbnailError) return;
+          if (video.mediaMetadataLoaded && (video.customThumbnail || video.defaultThumbnail)) return;
+          video.metadataPending = true;
+          metadataQueue.push(video);
+        });
+        processNextVideoMetadata(generation);
+      }, { rootMargin: "160px 0px" });
+    } else {
+      metadataFallbackScroll = observeVisibleVideoMetadata;
+      window.addEventListener("scroll", metadataFallbackScroll, { passive: true });
+    }
+    observeVisibleVideoMetadata();
+  }
+
+  function stopVideoMetadataLoading(persistChanges = true) {
+    metadataGeneration++;
+    videoMetadataObserver?.disconnect();
+    videoMetadataObserver = null;
+    if (metadataFallbackScroll) {
+      window.removeEventListener("scroll", metadataFallbackScroll);
+      metadataFallbackScroll = null;
+    }
+    metadataQueue = [];
+    videos.forEach(video => { video.metadataPending = false; });
+    cancelActiveMetadataLoad?.();
+    cancelActiveMetadataLoad = null;
+    metadataProcessing = false;
+    if (metadataWorker) {
+      metadataWorker.pause();
+      metadataWorker.removeAttribute("src");
+      metadataWorker.load();
+      metadataWorker = null;
+    }
+    if (persistChanges) flushGeneratedMetadata();
+    else generatedMetadataDirty = false;
+  }
+
+  function observeVisibleVideoMetadata() {
+    if (!metadataWorker || !playerModal.hidden) return;
+    const generation = metadataGeneration;
+    grid.querySelectorAll(".thumb-wrap").forEach(thumb => {
+      const card = thumb.closest(".video-card");
+      const video = videos.find(candidate => candidate.key === card?.dataset.videoKey);
+      if (!video || video.metadataPending || video.metadataError || video.thumbnailError) return;
+      if (video.mediaMetadataLoaded && (video.customThumbnail || video.defaultThumbnail)) return;
+      if (videoMetadataObserver) {
+        videoMetadataObserver.observe(thumb);
+      } else {
+        const bounds = thumb.getBoundingClientRect();
+        if (bounds.bottom >= 0 && bounds.top <= window.innerHeight) {
+          video.metadataPending = true;
+          metadataQueue.push(video);
+        }
+      }
+    });
+    processNextVideoMetadata(generation);
+  }
+
+  function processNextVideoMetadata(generation) {
+    if (generation !== metadataGeneration || metadataProcessing || !metadataQueue.length || !playerModal.hidden) {
+      if (generation === metadataGeneration && !metadataProcessing && !metadataQueue.length) flushGeneratedMetadata();
+      return;
+    }
+    const video = metadataQueue.shift();
+    const card = Array.from(grid.children).find(element => element.dataset.videoKey === video.key);
+    if (!card) {
+      video.metadataPending = false;
+      processNextVideoMetadata(generation);
+      return;
+    }
+    const bounds = card.querySelector(".thumb-wrap").getBoundingClientRect();
+    if (bounds.bottom < -160 || bounds.top > window.innerHeight + 160) {
+      video.metadataPending = false;
+      if (videoMetadataObserver) videoMetadataObserver.observe(card.querySelector(".thumb-wrap"));
+      processNextVideoMetadata(generation);
+      return;
+    }
+    metadataProcessing = true;
+    processVideoMetadata(metadataWorker, video).then(() => {
+      if (generation !== metadataGeneration) return;
+      metadataProcessing = false;
+      const card = Array.from(grid.children).find(element => element.dataset.videoKey === video.key);
+      if (card) updateCardThumbnail(card, video);
+      if (byId("sort").value === "duration") updateLibrary();
+      else updateLibrarySubtitle();
+      processNextVideoMetadata(generation);
+    }).catch(error => {
+      if (generation !== metadataGeneration) return;
+      console.warn(`Could not load metadata for ${video.file.name}.`, error);
+      video.metadataPending = false;
+      video.metadataError = true;
+      video.thumbnailError = !video.customThumbnail && !video.defaultThumbnail;
+      metadataProcessing = false;
+      const card = Array.from(grid.children).find(element => element.dataset.videoKey === video.key);
+      if (card) updateCardThumbnail(card, video);
+      processNextVideoMetadata(generation);
+    });
+  }
+
+  function processVideoMetadata(worker, video) {
     return new Promise(resolve => {
       let settled = false;
-      let targetTime = 0;
-      let firstFrame = null;
-      let fallbackThumbnail = "";
-      let bestThumbnail = "";
-      let bestDetailScore = -1;
-      let additionalFrameChecks = 0;
-      const finish = (thumbnail = "", duration = 0) => {
+      let metadataReady = false;
+      const needsThumbnail = !video.customThumbnail && !video.defaultThumbnail;
+      const finish = thumbnail => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
         worker.removeEventListener("loadedmetadata", onMetadata);
-        worker.removeEventListener("loadeddata", onLoadedData);
-        worker.removeEventListener("seeked", onSeeked);
+        worker.removeEventListener("loadeddata", onFrameReady);
+        worker.removeEventListener("seeked", onFrameReady);
         worker.removeEventListener("error", onError);
-        video.previewError = !thumbnail;
-        video.duration = Number.isFinite(duration) ? duration : 0;
-        video.width = worker.videoWidth || 0;
-        video.height = worker.videoHeight || 0;
-        video.generatedThumbnail = thumbnail;
-        video.thumbnail = video.customThumbnail || thumbnail;
+        cancelActiveMetadataLoad = null;
+        worker.pause();
+        worker.removeAttribute("src");
+        worker.load();
+        video.metadataPending = false;
+        if (thumbnail) {
+          video.defaultThumbnail = thumbnail;
+          video.thumbnail = video.customThumbnail || thumbnail;
+          video.thumbnailError = false;
+        } else if (needsThumbnail && !video.defaultThumbnail) {
+          video.thumbnailError = true;
+        }
+        if (video.mediaMetadataLoaded) {
+          cacheVideoMediaMetadata(video);
+        } else {
+          video.metadataError = true;
+        }
         resolve();
       };
       const captureFrame = () => {
-        if (worker.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || worker.seeking) return;
-        if (targetTime > 0 && Math.abs(worker.currentTime - targetTime) > 0.25) return;
+        if (!metadataReady || worker.seeking || worker.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
         try {
           if (!worker.videoWidth || !worker.videoHeight) {
-            finish("", worker.duration);
+            finish("");
             return;
           }
           const canvas = document.createElement("canvas");
@@ -1157,147 +1574,87 @@
           canvas.height = 270;
           const context = canvas.getContext("2d", { alpha: false });
           if (!context) {
-            finish("", worker.duration);
+            finish("");
             return;
           }
           const sourceRatio = worker.videoWidth / worker.videoHeight;
           const targetRatio = canvas.width / canvas.height;
-          let sourceWidth = worker.videoWidth;
-          let sourceHeight = worker.videoHeight;
-          if (sourceRatio > targetRatio) {
-            sourceWidth = sourceHeight * targetRatio;
-          } else {
-            sourceHeight = sourceWidth / targetRatio;
-          }
-          const sourceX = (worker.videoWidth - sourceWidth) / 2;
-          const sourceY = (worker.videoHeight - sourceHeight) / 2;
+          const sourceWidth = sourceRatio > targetRatio ? worker.videoHeight * targetRatio : worker.videoWidth;
+          const sourceHeight = sourceRatio > targetRatio ? worker.videoHeight : worker.videoWidth / targetRatio;
           context.drawImage(
             worker,
-            sourceX, sourceY, sourceWidth, sourceHeight,
+            (worker.videoWidth - sourceWidth) / 2,
+            (worker.videoHeight - sourceHeight) / 2,
+            sourceWidth,
+            sourceHeight,
             0, 0, canvas.width, canvas.height
           );
-          const pixels = [];
-          const frame = context.getImageData(0, 0, canvas.width, canvas.height).data;
-          const colorCounts = new Uint16Array(4096);
-          for (let y = 0; y < canvas.height; y += 4) {
-            for (let x = 0; x < canvas.width; x += 4) {
-              const offset = (y * canvas.width + x) * 4;
-              const red = frame[offset];
-              const green = frame[offset + 1];
-              const blue = frame[offset + 2];
-              pixels.push(red, green, blue);
-              colorCounts[((red >> 4) << 8) | ((green >> 4) << 4) | (blue >> 4)]++;
-            }
-          }
-          const dominantColor = colorCounts.indexOf(Math.max(...colorCounts));
-          const dominantRed = ((dominantColor >> 8) & 15) * 16 + 8;
-          const dominantGreen = ((dominantColor >> 4) & 15) * 16 + 8;
-          const dominantBlue = (dominantColor & 15) * 16 + 8;
-          let similarPixels = 0;
-          for (let index = 0; index < pixels.length; index += 3) {
-            // Treat colors within 24 levels per RGB channel as similar; raise this to be more forgiving.
-            if (Math.abs(pixels[index] - dominantRed) <= 24 &&
-                Math.abs(pixels[index + 1] - dominantGreen) <= 24 &&
-                Math.abs(pixels[index + 2] - dominantBlue) <= 24) {
-              similarPixels++;
-            }
-          }
-          const thumbnail = canvas.toDataURL("image/jpeg", .78);
-          if (!firstFrame) {
-            // A mostly single-color opening frame may be a title card rather than useful video content.
-            const mostlyUniform = similarPixels / (pixels.length / 3) >= 0.9;
-            if (!mostlyUniform) {
-              finish(thumbnail, worker.duration);
-              return;
-            }
-            fallbackThumbnail = thumbnail;
-            firstFrame = pixels;
-            bestThumbnail = thumbnail;
-            bestDetailScore = 1 - similarPixels / (pixels.length / 3);
-          } else {
-            let changedPixels = 0;
-            for (let index = 0; index < pixels.length; index += 3) {
-              // Count pixels whose largest RGB-channel change exceeds 40 levels.
-              if (Math.max(
-                Math.abs(pixels[index] - firstFrame[index]),
-                Math.abs(pixels[index + 1] - firstFrame[index + 1]),
-                Math.abs(pixels[index + 2] - firstFrame[index + 2])
-              ) > 40) {
-                changedPixels++;
-              }
-            }
-            const changedRatio = changedPixels / (pixels.length / 3);
-            const detailScore = 1 - similarPixels / (pixels.length / 3);
-            // Prefer a changed frame with detail; keep searching if it is still mostly a title card.
-            if (changedRatio >= 0.1 && detailScore > bestDetailScore) {
-              bestThumbnail = thumbnail;
-              bestDetailScore = detailScore;
-            }
-            if (changedRatio >= 0.1 && detailScore > 0.1) {
-              finish(thumbnail, worker.duration);
-              return;
-            }
-          }
-
-          // Keep sampling short title cards, but cap the look-ahead so huge libraries stay responsive.
-          const nextTime = Math.min(targetTime + 5, worker.duration - 0.1);
-          if (additionalFrameChecks < 6 && Number.isFinite(nextTime) && nextTime > targetTime + 0.25) {
-            additionalFrameChecks++;
-            targetTime = nextTime;
-            worker.currentTime = targetTime;
-            return;
-          }
-          if (firstFrame) {
-            finish(bestThumbnail || fallbackThumbnail, worker.duration);
-          } else {
-            finish("", worker.duration);
-          }
-        } catch {
-          finish(bestThumbnail || fallbackThumbnail, worker.duration);
+          finish(canvas.toDataURL("image/jpeg", .78));
+        } catch (error) {
+          console.info(`Could not create a default thumbnail for ${video.file.name}.`, error);
+          finish("");
         }
       };
       const onMetadata = () => {
+        metadataReady = true;
+        video.duration = Number.isFinite(worker.duration) && worker.duration > 0 ? worker.duration : 0;
         video.width = worker.videoWidth || 0;
         video.height = worker.videoHeight || 0;
-        video.duration = Number.isFinite(worker.duration) ? worker.duration : 0;
-        targetTime = Number.isFinite(worker.duration) && worker.duration > 0.2
-          ? Math.min(7.5, worker.duration / 2)
-          : 0;
-        if (targetTime > 0) {
+        video.mediaMetadataLoaded = true;
+        cacheVideoMediaMetadata(video);
+        const card = Array.from(grid.children).find(element => element.dataset.videoKey === video.key);
+        if (card) updateCardThumbnail(card, video);
+        if (byId("sort").value === "duration") updateLibrary();
+        else updateLibrarySubtitle();
+        if (!needsThumbnail || !video.duration) {
+          finish("");
+          return;
+        }
+        const midpoint = Math.min(worker.duration - 0.1, worker.duration / 2);
+        if (midpoint > 0.05) {
           try {
-            worker.currentTime = targetTime;
-          } catch {
-            finish("", worker.duration);
+            worker.currentTime = midpoint;
+          } catch (error) {
+            console.info(`Could not seek to the middle of ${video.file.name}.`, error);
+            finish("");
           }
+        } else {
+          captureFrame();
         }
       };
-      const onLoadedData = () => captureFrame();
-      const onSeeked = () => captureFrame();
-      const onError = () => finish(bestThumbnail || fallbackThumbnail, worker.duration);
-      const timeout = setTimeout(() => finish(bestThumbnail || fallbackThumbnail, worker.duration), 30000);
+      const onFrameReady = () => captureFrame();
+      const onError = () => finish("");
+      const timeout = setTimeout(() => finish(""), 30000);
+      cancelActiveMetadataLoad = () => finish("");
       worker.addEventListener("loadedmetadata", onMetadata, { once: true });
-      worker.addEventListener("loadeddata", onLoadedData, { once: true });
-      worker.addEventListener("seeked", onSeeked);
+      worker.addEventListener("loadeddata", onFrameReady);
+      worker.addEventListener("seeked", onFrameReady);
       worker.addEventListener("error", onError, { once: true });
       worker.src = video.url;
       worker.load();
     });
   }
 
-  function updateCardThumbnail(card, video) {
-    const image = card.querySelector(".thumb-image");
-    const skeleton = card.querySelector(".thumb-skeleton");
-    const duration = card.querySelector(".duration-badge");
-    if (video.thumbnail) {
-      image.src = video.thumbnail;
-      image.hidden = false;
-      skeleton.hidden = true;
-    }
-    duration.textContent = video.duration ? formatTime(video.duration) : "--:--";
+  function cacheVideoMediaMetadata(video) {
+    const metadata = metadataFor(video);
+    metadata.duration = video.duration;
+    metadata.width = video.width;
+    metadata.height = video.height;
+    metadata.mediaMetadataLoaded = true;
+    metadata.defaultThumbnail = video.defaultThumbnail;
+    videoMetadata[video.key] = metadata;
+    generatedMetadataDirty = true;
+  }
+
+  function flushGeneratedMetadata() {
+    if (!generatedMetadataDirty) return;
+    generatedMetadataDirty = false;
+    persistVideoMetadata().catch(() => {});
+    saveMetadataSidecar();
   }
 
   function updateLibrarySubtitle() {
-    if (activeFilter !== "all") return;
+    if (activeFilter !== "all" || loadingVideosTotal) return;
     const totalDuration = videos.reduce((sum, video) => sum + (video.duration || 0), 0);
     byId("library-subtitle").textContent = `${videos.length} ${videos.length === 1 ? "video" : "videos"}${totalDuration ? ` · ${formatTime(totalDuration)} total` : ""}`;
   }
@@ -1503,6 +1860,7 @@
   }
 
   function positionSeekPreview(event) {
+    if (!activeVideo) return;
     const rect = seekTrack.getBoundingClientRect();
     const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
     const duration = Number.isFinite(player.duration) ? player.duration : 0;
@@ -1513,10 +1871,21 @@
     seekPreviewVideo.dataset.pendingTime = String(target);
     byId("seek-preview-time").textContent = formatTime(target);
     seekPreview.hidden = false;
+    if (seekPreviewVideo.getAttribute("src") !== activeVideo.url) {
+      seekPreviewVideo.src = activeVideo.url;
+      seekPreviewVideo.load();
+    }
     if (duration && seekPreviewVideo.readyState >= HTMLMediaElement.HAVE_METADATA &&
         Math.abs(seekPreviewVideo.currentTime - target) > 0.8 && !seekPreviewVideo.seeking) {
       try { seekPreviewVideo.currentTime = Math.min(duration - 0.05, target); } catch { /* Wait for another pointer movement. */ }
     }
+  }
+
+  function hideSeekPreview() {
+    seekPreview.hidden = true;
+    seekPreviewVideo.pause();
+    seekPreviewVideo.removeAttribute("src");
+    seekPreviewVideo.load();
   }
 
   seekPreviewVideo.addEventListener("loadedmetadata", () => {
@@ -1629,6 +1998,8 @@
 
   // Player lifecycle owns progress saving, active subtitle cleanup, and temporary video sources.
   function openPlayer(video, keepQueue = false) {
+    stopVideoMetadataLoading();
+    hideSeekPreview();
     if (activeVideo && activeVideo !== video) savePlaybackProgress();
     if (activeVideo !== video) clearSubtitleTrack();
     if (activeVideo !== video) lastProgressSave = -1;
@@ -1652,8 +2023,6 @@
     playerShell.classList.remove("error", "controls-hidden");
     player.currentTime = 0;
     player.src = video.url;
-    seekPreviewVideo.src = video.url;
-    seekPreviewVideo.load();
     byId("seek-played").style.width = "0%";
     byId("seek-buffered").style.width = "0%";
     byId("current-time").textContent = formatTime(0);
@@ -1673,6 +2042,20 @@
       if (Number.isFinite(player.duration) && player.duration > 0) video.duration = player.duration;
       video.width = player.videoWidth || video.width;
       video.height = player.videoHeight || video.height;
+      video.mediaMetadataLoaded = true;
+      const metadata = metadataFor(video);
+      metadata.duration = video.duration;
+      metadata.width = video.width;
+      metadata.height = video.height;
+      metadata.mediaMetadataLoaded = true;
+      videoMetadata[video.key] = metadata;
+      generatedMetadataDirty = true;
+      flushGeneratedMetadata();
+      const card = Array.from(grid.children).find(element => element.dataset.videoKey === video.key);
+      if (card) updateCardDuration(card, video);
+      if (byId("sort").value === "duration") updateLibrary();
+      updateLibrarySubtitle();
+      renderRecommendations(video);
       updateVideoDetails(video);
       updatePlaybackUI();
     };
@@ -1693,9 +2076,7 @@
     player.pause();
     player.removeAttribute("src");
     player.load();
-    seekPreviewVideo.pause();
-    seekPreviewVideo.removeAttribute("src");
-    seekPreviewVideo.load();
+    hideSeekPreview();
     clearSubtitleTrack();
     playerModal.hidden = true;
     document.body.style.overflow = "";
@@ -1709,6 +2090,7 @@
     activeVideo = null;
     playingSegment = null;
     updateLibrary();
+    buildVideoMetadataObserver();
   }
 
   function savePlaybackProgress() {
@@ -1774,10 +2156,10 @@
   seekTrack.addEventListener("pointerup", event => {
     if (draggingSeek) seekToPointer(event);
     draggingSeek = false;
-    if (!seekTrack.matches(":hover")) seekPreview.hidden = true;
+    if (!seekTrack.matches(":hover")) hideSeekPreview();
   });
   seekTrack.addEventListener("pointerleave", () => {
-    if (!draggingSeek) seekPreview.hidden = true;
+    if (!draggingSeek) hideSeekPreview();
   });
   seekTrack.addEventListener("keydown", event => {
     const offsets = { ArrowLeft: -5, ArrowDown: -5, ArrowRight: 5, ArrowUp: 5, PageDown: -30, PageUp: 30 };
@@ -1870,6 +2252,7 @@
   });
 
   window.addEventListener("beforeunload", () => {
+    stopVideoMetadataLoading();
     if (activeVideo) savePlaybackProgress();
     objectUrls.forEach(URL.revokeObjectURL);
   });

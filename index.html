@@ -49,7 +49,7 @@
     <!-- Library filters and user-created playlists. -->
     <aside class="sidebar" aria-label="Library navigation">
       <nav class="nav-list">
-        <button class="nav-item active" data-filter="all"><svg class="icon" aria-hidden="true"><use href="#icon-grid"></use></svg>All videos <span class="nav-count" id="all-count"></span></button>
+        <button class="nav-item active" data-filter="all" aria-current="page"><svg class="icon" aria-hidden="true"><use href="#icon-grid"></use></svg>All videos <span class="nav-count" id="all-count"></span></button>
         <button class="nav-item" data-filter="continue"><svg class="icon" aria-hidden="true"><use href="#icon-clock"></use></svg>Continue watching</button>
         <button class="nav-item" data-filter="watchlater"><svg class="icon" aria-hidden="true"><use href="#icon-bookmark"></use></svg>Watch later</button>
         <button class="nav-item" data-filter="watched"><svg class="icon" aria-hidden="true"><use href="#icon-check"></use></svg>Watched</button>
@@ -83,7 +83,6 @@
           <div class="art-window">          <div class="art-play"><svg class="icon icon-filled" aria-hidden="true"><use href="#icon-play"></use></svg></div><div class="art-line"></div><div class="art-line short"></div></div>
           <div class="art-card card-one"></div><div class="art-card card-two"></div>
         </div>
-        <p class="eyebrow">YOUR OWN LITTLE CINEMA</p>
         <h1>All your videos,<br><span>in one place.</span></h1>
         <p class="welcome-copy">Pick a folder to build a beautiful, searchable library. Your videos never leave your computer.</p>
         <button class="primary-button" id="welcome-choose" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-folder"></use></svg><span class="button-label">Choose a video folder</span></button>
@@ -95,7 +94,6 @@
       <section id="library" class="library" hidden>
         <div class="library-heading">
           <div>
-            <p class="eyebrow" id="library-eyebrow">YOUR LIBRARY</p>
             <h1 id="page-title">All videos</h1>
             <p class="library-subtitle" id="library-subtitle"></p>
           </div>
@@ -186,7 +184,6 @@
             <div id="player-error" class="player-error" hidden>This video format cannot be played by your browser.</div>
           </div>
           <section class="video-info">
-            <p class="eyebrow">NOW PLAYING</p>
             <h1 id="player-title"></h1>
             <p id="player-file-info" class="video-file-info"></p>
             <dl id="video-properties" class="video-properties"></dl>
