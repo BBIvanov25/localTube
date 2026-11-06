@@ -27,6 +27,7 @@ For HDD-friendly browsing, LocalTube reads one video at a time only as its card 
 - Load local WebVTT or SubRip subtitles; show duration, resolution, format, size, path, and modified date.
 - Seek with frame and time previews, adjust volume and playback speed, and use full-width theater or fullscreen mode.
 - Keep unsupported video formats visible and show when the browser cannot preview or play them.
+- On the Windows desktop app, optionally share a selected library over the LAN with a password-protected, read-only browser page. Other devices can browse/search/sort the library, view available thumbnails and metadata, and stream videos with seeking.
 - Use a custom SVG icon set without external assets, fonts, services, or build tools.
 
 ## Browser support and privacy
@@ -36,6 +37,12 @@ The browser edition remains a static web app with no install step, build step, o
 Video playback and thumbnail generation depend on the browser's built-in codec support. A video may appear in the library even if that browser cannot play or create a thumbnail for its format; codec availability varies by browser, operating system, and file.
 
 Selected video files are stored temporarily in IndexedDB so a page refresh can restore them; starting the app in a new navigation clears that cache. Watch progress, Watch later choices, playlists, and metadata persist in browser storage or, for the Windows desktop app, in the per-user WebView2 app data. Select the folder again after each fresh desktop launch. When writable folder access is supported, LocalTube requests access to the selected folder and writes metadata there; videos and other files are never uploaded. Browser storage quotas may limit temporary video retention; LocalTube reports when saving fails. Use **Forget library** to remove saved video files, metadata, playlists, and watch history, or clear the relevant browser/app data. Temporary playback and subtitle URLs are not persisted.
+
+### LAN sharing
+
+LAN sharing is available only in the Windows desktop app. Load a library, choose **Share on LAN**, select the folder to expose, and set a password of at least four characters. LocalTube shows a URL that another device on the same network can open. Sharing is manual and read-only; use **Stop sharing** or close the app to stop it. The server exposes only recognized video files under the selected folder and does not expose arbitrary filesystem paths.
+
+The remote page supports library search and sorting, thumbnails saved in LocalTube metadata, video titles, duration, resolution, file size, and HTTP range requests for seeking. The connection is plain HTTP on the local network, not HTTPS, so use a trusted LAN and do not reuse an important password. Windows Firewall may ask permission for the desktop app to accept private-network connections. The browser edition cannot host LAN sharing because a normal browser page cannot listen for inbound connections.
 
 ## Keyboard shortcuts
 
@@ -57,6 +64,7 @@ While the player is open:
 - `styles.css` — design tokens, library/player layouts, and responsive breakpoints
 - `app.js` — application state, persistence, rendering, previews, playlists, and playback
 - `package.json` and `vite.config.js` — desktop development and frontend build commands
+- `public/remote.*` — the password-protected LAN library page served by the Windows desktop host
 - `src-tauri/` — Tauri Windows application shell and bundle configuration
 - `scripts/package-windows.js` — copies the installer and portable executable to `release/`
 - `CONTRIBUTING.md` — local development and release checks

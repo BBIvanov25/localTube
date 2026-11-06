@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LocalTube LAN library</title>
+  <link rel="stylesheet" href="/remote.css">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <p class="eyebrow">LOCALTUBE · LAN LIBRARY</p>
+      <h1>Browse the shared library</h1>
+      <p id="status" role="status">Enter the sharing password to continue.</p>
+    </header>
+    <form id="login" class="login">
+      <label for="password">Sharing password</label>
+      <div class="login-row">
+        <input id="password" type="password" autocomplete="current-password" required>
+        <button type="submit">Connect</button>
+      </div>
+    </form>
+    <section id="library" hidden>
+      <div class="toolbar">
+        <input id="search" type="search" placeholder="Search videos" autocomplete="off">
+        <label>Sort by <select id="sort"><option value="name">Name</option><option value="recent">Recently modified</option><option value="duration">Duration</option><option value="size">File size</option></select></label>
+      </div>
+      <div id="grid" class="grid"></div>
+      <p id="empty" hidden>No matching videos.</p>
+    </section>
+    <dialog id="player">
+      <button id="close" class="close" type="button" aria-label="Close player">×</button>
+      <video id="video" controls playsinline></video>
+      <h2 id="player-title"></h2>
+      <p id="player-details"></p>
+    </dialog>
+  </main>
+  <script src="/remote.js"></script>
+</body>
+</html>

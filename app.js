@@ -39,6 +39,9 @@
   const platformLabel = isDesktopApp ? "app" : "browser";
   const storageLabel = isDesktopApp ? "the app" : "this browser";
   const mediaSessionLabel = isDesktopApp ? "this app session" : "this browser tab session";
+  const tauriInvoke = isDesktopApp && typeof window.__TAURI_INTERNALS__.invoke === "function"
+    ? window.__TAURI_INTERNALS__.invoke.bind(window.__TAURI_INTERNALS__)
+    : null;
   let videos = [];
   let activeFilter = "all";
   let activeVideo = null;
@@ -73,6 +76,7 @@
   let cancelActiveMetadataLoad = null;
   let generatedMetadataDirty = false;
   let metadataFallbackScroll = null;
+  let lanSharingStarted = false;
 
   if (!supportsWebkitDirectoryInput) {
     fileInput.removeAttribute("webkitdirectory");
@@ -340,6 +344,51 @@
     status.hidden = !message;
   }
 
+  function updateLanSharingControls(message = "") {
+    const container = byId("lan-sharing");
+    if (!container) return;
+    container.hidden = !isDesktopApp;
+    byId("start-lan-sharing").hidden = lanSharingStarted;
+    byId("stop-lan-sharing").hidden = !lanSharingStarted;
+    byId("lan-sharing-status").textContent = message;
+  }
+
+  async function startLanSharing() {
+    if (!tauriInvoke || !videos.length) return;
+    const password = window.prompt("Choose a password for LAN sharing (at least 4 characters):", "");
+    if (password === null) return;
+    if (password.trim().length < 4) {
+      updateLanSharingControls("Use a password with at least 4 characters.");
+      return;
+    }
+    try {
+      const root = await tauriInvoke("pick_share_folder");
+      if (!root) return;
+      const result = await tauriInvoke("start_lan_share", {
+        root,
+        password,
+        libraryJson: JSON.stringify(shareableLibrary())
+      });
+      lanSharingStarted = true;
+      updateLanSharingControls(`Open ${result.url} on another device.`);
+    } catch (error) {
+      console.warn("Could not start LAN sharing.", error);
+      updateLanSharingControls(error.message || "LAN sharing could not be started.");
+    }
+  }
+
+  async function stopLanSharing() {
+    if (!tauriInvoke || !lanSharingStarted) return;
+    try {
+      await tauriInvoke("stop_lan_share");
+      lanSharingStarted = false;
+      updateLanSharingControls("LAN sharing stopped.");
+    } catch (error) {
+      console.warn("Could not stop LAN sharing.", error);
+      updateLanSharingControls(error.message || "LAN sharing could not be stopped.");
+    }
+  }
+
   function stableKey(file, path = file.webkitRelativePath || file.name) {
     return `${path}|${file.size}|${file.lastModified}`;
   }
@@ -576,6 +625,28 @@
   function saveMetadataChanges() {
     persistVideoMetadata().catch(() => {});
     saveMetadataSidecar();
+    publishLanMetadata();
+  }
+
+  function shareableLibrary() {
+    return videos.map(video => ({
+      key: video.key,
+      path: video.path,
+      title: video.title,
+      duration: video.duration || 0,
+      width: video.width || 0,
+      height: video.height || 0,
+      thumbnail: video.thumbnail || ""
+    }));
+  }
+
+  async function publishLanMetadata() {
+    if (!tauriInvoke || !lanSharingStarted) return;
+    try {
+      await tauriInvoke("update_lan_share_metadata", { libraryJson: JSON.stringify(shareableLibrary()) });
+    } catch (error) {
+      console.warn("Could not refresh LAN sharing metadata.", error);
+    }
   }
 
   function serializeVideoMetadata(onlyVideos = null) {
@@ -1209,6 +1280,7 @@
 
   async function forgetLibrary() {
     if (!videos.length || !await confirmAction(`Remove the saved video files, metadata, playlists, and watch history from ${storageLabel}?`)) return;
+    if (lanSharingStarted) await stopLanSharing();
     stopVideoMetadataLoading(false);
     try {
       await clearPersistedMedia();
@@ -1306,6 +1378,9 @@
     if (activePlaylistId) deletePlaylist(activePlaylistId);
   });
   byId("forget-library").addEventListener("click", forgetLibrary);
+  byId("start-lan-sharing").addEventListener("click", startLanSharing);
+  byId("stop-lan-sharing").addEventListener("click", stopLanSharing);
+  updateLanSharingControls();
   byId("browse-library").addEventListener("click", () => {
     activeFilter = "all";
     activePlaylistId = null;
@@ -1670,6 +1745,7 @@
     generatedMetadataDirty = false;
     persistVideoMetadata().catch(() => {});
     saveMetadataSidecar();
+    publishLanMetadata();
   }
 
   function updateLibrarySubtitle() {
@@ -2271,6 +2347,7 @@
   });
 
   window.addEventListener("beforeunload", () => {
+    if (lanSharingStarted && tauriInvoke) tauriInvoke("stop_lan_share").catch(() => {});
     stopVideoMetadataLoading();
     if (activeVideo) savePlaybackProgress();
     objectUrls.forEach(URL.revokeObjectURL);

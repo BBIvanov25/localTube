@@ -302,6 +302,19 @@ h1, h2, p { margin-top: 0; }
   .recommendations { position: static; max-height: none; }
   .recommendation-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+.lan-sharing {
+  display: inline-flex;
+  align-items: center;
+  gap: .55rem;
+  flex-wrap: wrap;
+}
+
+.lan-sharing-status {
+  max-width: 22rem;
+  color: var(--muted);
+  font-size: .78rem;
+}
 @media (max-width: 650px) {
   .topbar { height: 62px; gap: 12px; padding: 0 14px; }
   .brand { gap: 7px; font-size: 17px; }
