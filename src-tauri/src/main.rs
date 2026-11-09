@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::State;
 use tiny_http::{Header, Method, Request, Response, Server, StatusCode};
@@ -380,7 +380,7 @@ fn build_loaded_library_from_paths(
             })
             .unwrap_or(metadata.modified);
         result.insert(
-            metadata.path.clone(),
+            metadata.key.clone(),
             VideoFile {
                 metadata: metadata.clone(),
                 path: path.clone(),
@@ -416,7 +416,21 @@ fn serve_requests(
             break;
         }
         match server.recv_timeout(Duration::from_millis(250)) {
-            Ok(Some(request)) => handle_request(request, &files, &pending_files, &password, &token),
+            Ok(Some(request)) => {
+                let request_files = Arc::clone(&files);
+                let request_pending = Arc::clone(&pending_files);
+                let request_password = password.clone();
+                let request_token = token.clone();
+                thread::spawn(move || {
+                    handle_request(
+                        request,
+                        &request_files,
+                        &request_pending,
+                        &request_password,
+                        &request_token,
+                    );
+                });
+            }
             Ok(None) => continue,
             Err(_) => break,
         }
@@ -485,21 +499,17 @@ fn handle_request(
                 "height": file.metadata.height,
                 "size": file.size,
                 "modified": file.modified,
-                "thumbnail": if file.metadata.thumbnail.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(format!("/api/thumb/{}?token={}", encode_path(&file.metadata.path), token)) },
-                "video": format!("/api/video/{}?token={}", encode_path(&file.metadata.path), token)
+                "thumbnail": if file.metadata.thumbnail.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(format!("/api/thumb/{}?token={}", encode_path(&file.metadata.key), token)) },
+                "video": format!("/api/video/{}?token={}", encode_path(&file.metadata.key), token)
             })
         }).collect();
         return respond_json(request, 200, &items);
     }
-    if let Some(path) = url.strip_prefix("/api/video/").and_then(path_from_url) {
-        return stream_file(request, files, pending_files, &path);
+    if let Some(key) = url.strip_prefix("/api/video/").and_then(path_from_url) {
+        return stream_file(request, files, pending_files, &key);
     }
-    if let Some(path) = url.strip_prefix("/api/thumb/").and_then(path_from_url) {
-        if let Some(file) = files
-            .lock()
-            .ok()
-            .and_then(|files| files.get(&path).cloned())
-        {
+    if let Some(key) = url.strip_prefix("/api/thumb/").and_then(path_from_url) {
+        if let Some(file) = files.lock().ok().and_then(|files| files.get(&key).cloned()) {
             if let Some(data) = file
                 .metadata
                 .thumbnail
@@ -536,9 +546,9 @@ fn stream_file(
     request: Request,
     files: &Arc<Mutex<HashMap<String, VideoFile>>>,
     pending_files: &Arc<Mutex<HashMap<String, (u64, u64)>>>,
-    path: &str,
+    key: &str,
 ) {
-    let Some(file) = files.lock().ok().and_then(|files| files.get(path).cloned()) else {
+    let Some(file) = files.lock().ok().and_then(|files| files.get(key).cloned()) else {
         return respond_text(request, 404, "Video not found.", "text/plain");
     };
     let range_header = request
@@ -557,19 +567,34 @@ fn stream_file(
             if let Ok(mut pending) = pending_files.lock() {
                 pending.insert(file.metadata.key.clone(), (missing_start, missing_end));
             }
-            return respond_text(
-                request,
-                425,
-                "The host is preparing the next video segment. Retry shortly.",
-                "text/plain",
-            );
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let mut prepared = None;
+            while Instant::now() < deadline {
+                if let Some(updated) = files.lock().ok().and_then(|files| files.get(key).cloned()) {
+                    if missing_range(&updated, missing_start, missing_end).is_none() {
+                        prepared = Some(updated);
+                        break;
+                    }
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            let Some(updated) = prepared else {
+                return respond_retry(request, "The host did not prepare the requested segment.");
+            };
+            let file = updated;
+            end = missing_end.min(start.saturating_add(PREPARE_CHUNK_SIZE - 1));
+            return stream_prepared_file(request, file, start, end, range.is_some());
         }
         end = (missing_start - 1).min(start.saturating_add(PREPARE_CHUNK_SIZE - 1));
     }
+    stream_prepared_file(request, file, start, end, range.is_some());
+}
+
+fn stream_prepared_file(request: Request, file: VideoFile, start: u64, end: u64, has_range: bool) {
     let Ok(mut source) = File::open(&file.path) else {
         return respond_text(request, 404, "Video is no longer available.", "text/plain");
     };
-    let partial = range.is_some() || end + 1 < file.size;
+    let partial = has_range || end + 1 < file.size;
     if request.method() == &Method::Head {
         let response = Response::empty(if partial {
             StatusCode(206)
@@ -696,6 +721,15 @@ fn respond_text(request: Request, status: u16, body: &str, content_type: &str) {
     let _ = request.respond(response);
 }
 
+fn respond_retry(request: Request, body: &str) {
+    let response = Response::from_string(body)
+        .with_status_code(StatusCode(503))
+        .with_header(Header::from_bytes("Content-Type", "text/plain").unwrap())
+        .with_header(Header::from_bytes("Retry-After", "1").unwrap())
+        .with_header(Header::from_bytes("Cache-Control", "no-store").unwrap());
+    let _ = request.respond(response);
+}
+
 fn respond_json(request: Request, status: u16, body: &impl Serialize) {
     let response =
         Response::from_string(serde_json::to_string(body).unwrap_or_else(|_| "{}".into()))
@@ -774,7 +808,8 @@ fn mime_type(path: &Path) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_range;
+    use super::{add_available_range, missing_range, parse_range, VideoFile};
+    use std::path::PathBuf;
 
     #[test]
     fn parses_open_ended_and_suffix_ranges() {
@@ -788,5 +823,35 @@ mod tests {
         assert_eq!(parse_range("bytes=1000-", 1_000), None);
         assert_eq!(parse_range("bytes=200-100", 1_000), None);
         assert_eq!(parse_range("items=0-10", 1_000), None);
+    }
+
+    #[test]
+    fn merges_overlapping_available_ranges() {
+        let mut ranges = vec![(0, 99), (200, 299)];
+        add_available_range(&mut ranges, 90, 210);
+        assert_eq!(ranges, vec![(0, 299)]);
+    }
+
+    #[test]
+    fn finds_only_the_first_missing_segment() {
+        let file = VideoFile {
+            metadata: super::SharedVideo {
+                key: "key".into(),
+                path: "video.mp4".into(),
+                title: "Video".into(),
+                duration: 0.0,
+                width: 0,
+                height: 0,
+                thumbnail: String::new(),
+                size: 1_000,
+                modified: 0,
+            },
+            path: PathBuf::from("video.mp4"),
+            size: 1_000,
+            modified: 0,
+            available: vec![(0, 99), (300, 399)],
+        };
+        assert_eq!(missing_range(&file, 0, 399), Some((100, 399)));
+        assert_eq!(missing_range(&file, 300, 399), None);
     }
 }

@@ -420,7 +420,7 @@
   async function prepareLanVideo(request) {
     const video = videos.find(item => item.key === request.key);
     if (!video || !(video.file instanceof Blob)) return;
-    lanPreparingKeys.add(key);
+    lanPreparingKeys.add(request.key);
     try {
       updateLanSharingControls(`Streaming "${video.title}" segment ${request.start}-${request.end}…`);
       const bytes = new Uint8Array(await video.file.slice(request.start, request.end + 1).arrayBuffer());
@@ -438,7 +438,7 @@
       console.warn("Could not prepare the requested LAN video.", error);
       updateLanSharingControls(typeof error === "string" ? error : error.message || "A requested LAN video could not be prepared.");
     } finally {
-      lanPreparingKeys.delete(key);
+      lanPreparingKeys.delete(request.key);
     }
   }
 
@@ -585,6 +585,29 @@
       console.warn("Could not persist LocalTube video files.", error);
     });
     return operation;
+  }
+
+  function retainLoadedMedia(entries, generation) {
+    if (isDesktopApp) {
+      persistenceNotice = "";
+      showStatus(`Video files are available for this ${platformLabel} session.`);
+      processNextVideoMetadata(metadataGeneration);
+      return;
+    }
+    persistenceNotice = `Saving video files for ${mediaSessionLabel}…`;
+    showStatus(persistenceNotice);
+    Promise.resolve().then(() => storePersistedMedia(entries)).then(() => {
+      if (generation !== selectionGeneration) return;
+      persistenceNotice = "";
+      showStatus(`Video files are saved for ${mediaSessionLabel} and will be available after a refresh.`);
+      processNextVideoMetadata(metadataGeneration);
+    }).catch(error => {
+      console.warn("The selected videos could not be retained after refresh.", error);
+      if (generation !== selectionGeneration) return;
+      persistenceNotice = `Videos are available for this visit, but the ${platformLabel} could not retain them after refresh. Check available storage and ${platformLabel} permissions.`;
+      showStatus(persistenceNotice);
+      processNextVideoMetadata(metadataGeneration);
+    });
   }
 
   function clearPersistedMedia(clearMetadata = true) {
@@ -908,6 +931,7 @@
         metadataPermissionNotice = "Choose the video folder again to resume automatic metadata saving.";
       }
       if (selectionGeneration) return;
+      if (isDesktopApp) return;
       const records = await readPersistedMedia();
       if (selectionGeneration || !records.length) return;
       const restored = records.map(record => {
@@ -1000,20 +1024,7 @@
 
     loadingVideosTotal = 0;
     updateLibrary();
-    persistenceNotice = `Saving video files for ${mediaSessionLabel}…`;
-    showStatus(persistenceNotice);
-    Promise.resolve().then(() => storePersistedMedia(entries)).then(() => {
-      if (generation !== selectionGeneration) return;
-      persistenceNotice = "";
-      showStatus(`Video files are saved for ${mediaSessionLabel} and will be available after a refresh.`);
-      processNextVideoMetadata(metadataGeneration);
-    }).catch(error => {
-      console.warn("The selected videos could not be retained after refresh.", error);
-      if (generation !== selectionGeneration) return;
-      persistenceNotice = `Videos are available for this visit, but the ${platformLabel} could not retain them after refresh. Check available storage and ${platformLabel} permissions.`;
-      showStatus(persistenceNotice);
-      processNextVideoMetadata(metadataGeneration);
-    });
+    retainLoadedMedia(entries, generation);
     persistDirectoryHandle(directoryHandle).catch(error => {
       console.warn("Could not remember the selected LocalTube folder.", error);
       if (generation !== selectionGeneration) return;
@@ -1032,7 +1043,6 @@
     if (generation !== selectionGeneration) return;
     if (metadataFile) await importMetadataFile(metadataFile, false);
     if (generation !== selectionGeneration) return;
-    persistenceNotice = `Saving video files for ${mediaSessionLabel}…`;
     loadingVideosTotal = 0;
     if (videos.length) {
       showStatus(persistenceNotice);
@@ -1043,18 +1053,7 @@
     byId("welcome-status").hidden = true;
     activateLibrary(entries);
     metadataDirectoryHandle = directoryHandle;
-    Promise.resolve().then(() => storePersistedMedia(entries)).then(() => {
-      if (generation !== selectionGeneration) return;
-      persistenceNotice = "";
-      showStatus(`Video files are saved for ${mediaSessionLabel} and will be available after a refresh.`);
-      processNextVideoMetadata(metadataGeneration);
-    }).catch(error => {
-      console.warn("The selected videos could not be retained after refresh.", error);
-      if (generation !== selectionGeneration) return;
-      persistenceNotice = `Videos are available for this visit, but the ${platformLabel} could not retain them after refresh. Check available storage and ${platformLabel} permissions.`;
-      showStatus(persistenceNotice);
-      processNextVideoMetadata(metadataGeneration);
-    });
+    retainLoadedMedia(entries, generation);
     persistDirectoryHandle(directoryHandle).catch(error => {
       console.warn("Could not remember the selected LocalTube folder.", error);
       if (generation !== selectionGeneration) return;
@@ -1336,7 +1335,7 @@
   async function forgetLibrary() {
     if (!videos.length || !await confirmAction(`Remove the saved video files, metadata, playlists, and watch history from ${storageLabel}?`)) return;
     if (lanSharingStarted) await stopLanSharing();
-    stopVideoMetadataLoading(false);
+    stopVideoMetadataLoading(false, true);
     try {
       await clearPersistedMedia();
     } catch (error) {
@@ -1594,7 +1593,7 @@
     observeVisibleVideoMetadata();
   }
 
-  function stopVideoMetadataLoading(persistChanges = true) {
+  function stopVideoMetadataLoading(persistChanges = true, discardChanges = false) {
     metadataGeneration++;
     videoMetadataObserver?.disconnect();
     videoMetadataObserver = null;
@@ -1614,7 +1613,7 @@
       metadataWorker = null;
     }
     if (persistChanges) flushGeneratedMetadata();
-    else generatedMetadataDirty = false;
+    else if (discardChanges) generatedMetadataDirty = false;
   }
 
   function observeVisibleVideoMetadata() {
@@ -1797,6 +1796,7 @@
 
   function flushGeneratedMetadata() {
     if (!generatedMetadataDirty) return;
+    if (!playerModal.hidden) return;
     generatedMetadataDirty = false;
     persistVideoMetadata().catch(() => {});
     saveMetadataSidecar();
@@ -2148,7 +2148,7 @@
 
   // Player lifecycle owns progress saving, active subtitle cleanup, and temporary video sources.
   function openPlayer(video, keepQueue = false) {
-    stopVideoMetadataLoading();
+    stopVideoMetadataLoading(false);
     hideSeekPreview();
     if (activeVideo && activeVideo !== video) savePlaybackProgress();
     if (activeVideo !== video) clearSubtitleTrack();
@@ -2172,7 +2172,9 @@
     byId("player-error").hidden = true;
     playerShell.classList.remove("error", "controls-hidden");
     player.currentTime = 0;
+    player.preload = "auto";
     player.src = video.url;
+    player.load();
     byId("seek-played").style.width = "0%";
     byId("seek-buffered").style.width = "0%";
     byId("current-time").textContent = formatTime(0);

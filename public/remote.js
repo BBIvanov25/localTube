@@ -12,6 +12,7 @@
   const items = [];
   let token = sessionStorage.getItem(tokenKey) || "";
   let retryTimer = 0;
+  let retryGeneration = 0;
 
   const api = async (path, options = {}) => {
     const response = await fetch(path, {
@@ -52,7 +53,10 @@
       card.addEventListener("click", () => {
         document.getElementById("player-title").textContent = item.title;
         document.getElementById("player-details").textContent = `${item.path} · ${meta.textContent}`;
+        retryGeneration++;
+        video.preload = "auto";
         video.src = item.video;
+        video.load();
         player.showModal();
         video.play().catch(() => {});
       });
@@ -87,6 +91,7 @@
   sort.addEventListener("change", render);
   document.getElementById("close").addEventListener("click", () => {
     clearTimeout(retryTimer);
+    retryGeneration++;
     video.pause();
     video.removeAttribute("src");
     video.load();
@@ -94,10 +99,21 @@
   });
   video.addEventListener("error", () => {
     clearTimeout(retryTimer);
+    const generation = retryGeneration;
+    const resumeTime = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+    const shouldResume = !video.paused;
+    status.textContent = "The host is preparing the next segment…";
     retryTimer = window.setTimeout(() => {
-      if (!player.open) return;
+      if (!player.open || generation !== retryGeneration) return;
+      const restorePosition = () => {
+        if (generation !== retryGeneration) return;
+        if (resumeTime > 0 && Number.isFinite(video.duration) && resumeTime < video.duration) {
+          try { video.currentTime = resumeTime; } catch { /* Retry after metadata is available. */ }
+        }
+        if (shouldResume) video.play().catch(() => {});
+      };
+      video.addEventListener("loadedmetadata", restorePosition, { once: true });
       video.load();
-      video.play().catch(() => {});
     }, 1500);
   });
   if (token) loadLibrary().catch(() => { sessionStorage.removeItem(tokenKey); token = ""; });
