@@ -22,11 +22,11 @@ Before tagging a GitHub release, verify the README and license, run the syntax c
 
 ## Publishing a GitHub release
 
-The `Release Windows` workflow runs when a version tag such as `v1.2.0` is pushed. It installs the pinned npm dependencies, builds the Windows NSIS installer and portable executable, and publishes both files to a GitHub release with generated release notes.
+The `Release Windows` workflow runs when a version tag such as `v1.2.0` is pushed. It installs the pinned npm dependencies, builds the Windows NSIS installer and portable executable, packages the tagged project files as a source archive, and publishes all three files to a GitHub release with generated release notes.
 
 1. Update the version in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`.
 2. Run `npm ci`, `node --check app.js`, `npm run build`, and `npm run build:windows` from an x64 Visual Studio Developer Command Prompt.
-3. Confirm that `release/LocalTube_1.2.0_x64-setup.exe` and `release/LocalTube-Portable.exe` exist and launch as expected.
+3. Confirm that `release/LocalTube_1.2.0_x64-setup.exe` and `release/LocalTube-Portable.exe` exist and launch as expected. The workflow adds `LocalTube-v1.2.0-source.zip` from the exact tag.
 4. Commit the version change, push `main`, and push the matching tag:
 
    ```powershell

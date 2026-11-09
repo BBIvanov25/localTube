@@ -41,6 +41,12 @@ jobs:
       - name: Build Windows packages
         run: npm run build:windows
 
+      - name: Package project source
+        shell: pwsh
+        run: |
+          $sourceArchive = "release/LocalTube-${{ github.ref_name }}-source.zip"
+          git archive --format=zip --output=$sourceArchive --prefix="LocalTube-${{ github.ref_name }}/" "${{ github.ref_name }}"
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
