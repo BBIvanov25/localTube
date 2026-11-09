@@ -19,3 +19,22 @@ For changes to video handling, test with a browser-decodable video as well as an
 ## Release checks
 
 Before tagging a GitHub release, verify the README and license, run the syntax check and frontend build, and smoke-test the app in current Chrome, Firefox, and Safari when available. On Windows, run `npm run build:windows` and verify that `release/` contains the NSIS installer and portable executable. Test the installer with and without WebView2 installed where practical; the portable executable requires the WebView2 Runtime.
+
+## Publishing a GitHub release
+
+The `Release Windows` workflow runs when a version tag such as `v1.2.0` is pushed. It installs the pinned npm dependencies, builds the Windows NSIS installer and portable executable, and publishes both files to a GitHub release with generated release notes.
+
+1. Update the version in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`.
+2. Run `npm ci`, `node --check app.js`, `npm run build`, and `npm run build:windows` from an x64 Visual Studio Developer Command Prompt.
+3. Confirm that `release/LocalTube_1.2.0_x64-setup.exe` and `release/LocalTube-Portable.exe` exist and launch as expected.
+4. Commit the version change, push `main`, and push the matching tag:
+
+   ```powershell
+   git add package.json package-lock.json src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json CONTRIBUTING.md .github/workflows/release.yml
+   git commit -m "release: v1.2.0"
+   git push origin main
+   git tag -a v1.2.0 -m "Release v1.2.0"
+   git push origin v1.2.0
+   ```
+
+5. Watch the `Release Windows` workflow and verify the release assets and generated notes on GitHub. Do not reuse a tag: correct the source, create a new tag, and delete the failed release only if necessary.
