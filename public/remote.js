@@ -54,7 +54,7 @@
         document.getElementById("player-title").textContent = item.title;
         document.getElementById("player-details").textContent = `${item.path} · ${meta.textContent}`;
         retryGeneration++;
-        video.preload = "auto";
+        video.preload = "metadata";
         video.src = item.video;
         video.load();
         player.showModal();

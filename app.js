@@ -2172,7 +2172,7 @@
     byId("player-error").hidden = true;
     playerShell.classList.remove("error", "controls-hidden");
     player.currentTime = 0;
-    player.preload = "auto";
+    player.preload = "metadata";
     player.src = video.url;
     player.load();
     byId("seek-played").style.width = "0%";

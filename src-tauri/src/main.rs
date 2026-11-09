@@ -561,7 +561,7 @@ fn stream_file(
         return respond_text(request, 416, "Invalid byte range.", "text/plain");
     }
     let (start, requested_end) = range.unwrap_or((0, file.size.saturating_sub(1)));
-    let mut end = requested_end.min(start.saturating_add(PREPARE_CHUNK_SIZE - 1));
+    let mut end = requested_end;
     if let Some((missing_start, missing_end)) = missing_range(&file, start, requested_end) {
         if missing_start == start {
             if let Ok(mut pending) = pending_files.lock() {
