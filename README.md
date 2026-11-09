@@ -40,9 +40,9 @@ Selected video files are stored temporarily in IndexedDB so a page refresh can r
 
 ### LAN sharing
 
-LAN sharing is available only in the Windows desktop app. Load a library, choose **Share on LAN**, select the folder to expose, and set a password of at least four characters. LocalTube shows a URL that another device on the same network can open. Sharing is manual and read-only; use **Stop sharing** or close the app to stop it. The server exposes only recognized video files under the selected folder and does not expose arbitrary filesystem paths.
+LAN sharing is available only in the Windows desktop app. Load a library, choose **Share on LAN**, and set a password of at least four characters. Sharing uses the videos currently loaded in LocalTube; it does not ask you to choose the folder again. LocalTube shows one or more URLs for the host's active LAN adapters; open one of them on another device on the same network. Sharing is manual and read-only. If a phone cannot open the URL, confirm both devices are on the same non-guest Wi-Fi, use a displayed LAN URL rather than `localhost`, and allow LocalTube through Windows Firewall for private networks.
 
-The remote page supports library search and sorting, thumbnails saved in LocalTube metadata, video titles, duration, resolution, file size, and HTTP range requests for seeking. The connection is plain HTTP on the local network, not HTTPS, so use a trusted LAN and do not reuse an important password. Windows Firewall may ask permission for the desktop app to accept private-network connections. The browser edition cannot host LAN sharing because a normal browser page cannot listen for inbound connections.
+The remote page supports library search and sorting, thumbnails saved in LocalTube metadata, video titles, duration, resolution, file size, and HTTP byte-range requests for seeking and buffering. Native desktop files are read directly by the host server. Browser-managed files are delivered lazily in 2 MiB ranges only when requested, using a sparse temporary cache; the whole library is never copied before sharing starts. The connection is plain HTTP on the local network, not HTTPS, so use a trusted LAN and do not reuse an important password. The browser edition cannot host LAN sharing because a normal browser page cannot listen for inbound connections.
 
 ## Keyboard shortcuts
 

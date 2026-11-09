@@ -77,10 +77,19 @@
   let generatedMetadataDirty = false;
   let metadataFallbackScroll = null;
   let lanSharingStarted = false;
+  let lanPreparationTimer = 0;
+  const lanPreparingKeys = new Set();
 
   if (!supportsWebkitDirectoryInput) {
     fileInput.removeAttribute("webkitdirectory");
     fileInput.removeAttribute("directory");
+  }
+
+  function shareableFilePaths() {
+    return Object.fromEntries(videos.map(video => [
+      video.key,
+      typeof video.file.path === "string" && (/^[a-zA-Z]:[\\/]/.test(video.file.path) || video.file.path.startsWith("\\\\")) ? video.file.path : ""
+    ]).filter(([, path]) => path));
   }
   if (!supportsWebkitDirectoryInput && !supportsWritableDirectoryPicker) {
     byId("choose-folder").querySelector(".button-label").textContent = "Choose videos";
@@ -362,18 +371,18 @@
       return;
     }
     try {
-      const root = await tauriInvoke("pick_share_folder");
-      if (!root) return;
       const result = await tauriInvoke("start_lan_share", {
-        root,
         password,
-        libraryJson: JSON.stringify(shareableLibrary())
+        libraryJson: JSON.stringify(shareableLibrary()),
+        filePathsJson: JSON.stringify(shareableFilePaths())
       });
       lanSharingStarted = true;
-      updateLanSharingControls(`Open ${result.url} on another device.`);
+      startLanPreparationPolling();
+      const urls = Array.isArray(result.urls) && result.urls.length ? result.urls : [result.url];
+      updateLanSharingControls(`Open ${urls.join(" or ")} on another device. If it does not open, allow LocalTube through Windows Firewall on private networks.`);
     } catch (error) {
       console.warn("Could not start LAN sharing.", error);
-      updateLanSharingControls(error.message || "LAN sharing could not be started.");
+      updateLanSharingControls(typeof error === "string" ? error : error.message || "LAN sharing could not be started.");
     }
   }
 
@@ -382,10 +391,54 @@
     try {
       await tauriInvoke("stop_lan_share");
       lanSharingStarted = false;
+      clearInterval(lanPreparationTimer);
+      lanPreparationTimer = 0;
+      lanPreparingKeys.clear();
       updateLanSharingControls("LAN sharing stopped.");
     } catch (error) {
       console.warn("Could not stop LAN sharing.", error);
       updateLanSharingControls(error.message || "LAN sharing could not be stopped.");
+    }
+
+  }
+
+  function startLanPreparationPolling() {
+    clearInterval(lanPreparationTimer);
+    lanPreparationTimer = window.setInterval(async () => {
+      if (!lanSharingStarted || !tauriInvoke) return;
+      try {
+        const requests = await tauriInvoke("get_lan_prepare_requests");
+        for (const request of requests) {
+          if (!lanPreparingKeys.has(request.key)) prepareLanVideo(request);
+        }
+      } catch (error) {
+        console.warn("Could not check LAN video preparation requests.", error);
+      }
+    }, 500);
+  }
+
+  async function prepareLanVideo(request) {
+    const video = videos.find(item => item.key === request.key);
+    if (!video || !(video.file instanceof Blob)) return;
+    lanPreparingKeys.add(key);
+    try {
+      updateLanSharingControls(`Streaming "${video.title}" segment ${request.start}-${request.end}…`);
+      const bytes = new Uint8Array(await video.file.slice(request.start, request.end + 1).arrayBuffer());
+      const extension = video.file.name.includes(".") ? video.file.name.slice(video.file.name.lastIndexOf(".")) : ".video";
+      const fileName = `${request.key.replace(/[^a-z0-9_-]/gi, "").slice(0, 40)}${extension}`;
+      await tauriInvoke("stage_lan_share_file", {
+        key: request.key,
+        fileName,
+        offset: request.start,
+        totalSize: video.file.size,
+        data: Array.from(bytes)
+      });
+      updateLanSharingControls("LAN sharing is active.");
+    } catch (error) {
+      console.warn("Could not prepare the requested LAN video.", error);
+      updateLanSharingControls(typeof error === "string" ? error : error.message || "A requested LAN video could not be prepared.");
+    } finally {
+      lanPreparingKeys.delete(key);
     }
   }
 
@@ -636,6 +689,8 @@
       duration: video.duration || 0,
       width: video.width || 0,
       height: video.height || 0,
+      size: video.file.size || 0,
+      modified: video.file.lastModified || 0,
       thumbnail: video.thumbnail || ""
     }));
   }

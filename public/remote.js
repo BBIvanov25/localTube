@@ -11,6 +11,7 @@
   const video = document.getElementById("video");
   const items = [];
   let token = sessionStorage.getItem(tokenKey) || "";
+  let retryTimer = 0;
 
   const api = async (path, options = {}) => {
     const response = await fetch(path, {
@@ -85,10 +86,19 @@
   search.addEventListener("input", render);
   sort.addEventListener("change", render);
   document.getElementById("close").addEventListener("click", () => {
+    clearTimeout(retryTimer);
     video.pause();
     video.removeAttribute("src");
     video.load();
     player.close();
+  });
+  video.addEventListener("error", () => {
+    clearTimeout(retryTimer);
+    retryTimer = window.setTimeout(() => {
+      if (!player.open) return;
+      video.load();
+      video.play().catch(() => {});
+    }, 1500);
   });
   if (token) loadLibrary().catch(() => { sessionStorage.removeItem(tokenKey); token = ""; });
 })();

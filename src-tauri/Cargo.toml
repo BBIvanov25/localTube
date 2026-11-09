@@ -14,4 +14,4 @@ serde_json = "1"
 tauri = { version = "2", features = [] }
 tiny_http = "0.12"
 uuid = { version = "1", features = ["v4"] }
-rfd = "0.15"
+if-addrs = "0.13"
