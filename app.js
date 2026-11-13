@@ -409,7 +409,8 @@
       try {
         const requests = await tauriInvoke("get_lan_prepare_requests");
         for (const request of requests) {
-          if (!lanPreparingKeys.has(request.key)) prepareLanVideo(request);
+          const requestId = `${request.key}:${request.start}:${request.end}`;
+          if (!lanPreparingKeys.has(requestId)) prepareLanVideo(request, requestId);
         }
       } catch (error) {
         console.warn("Could not check LAN video preparation requests.", error);
@@ -417,10 +418,10 @@
     }, 500);
   }
 
-  async function prepareLanVideo(request) {
+  async function prepareLanVideo(request, requestId = `${request.key}:${request.start}:${request.end}`) {
     const video = videos.find(item => item.key === request.key);
     if (!video || !(video.file instanceof Blob)) return;
-    lanPreparingKeys.add(request.key);
+    lanPreparingKeys.add(requestId);
     try {
       updateLanSharingControls(`Streaming "${video.title}" segment ${request.start}-${request.end}…`);
       const bytes = new Uint8Array(await video.file.slice(request.start, request.end + 1).arrayBuffer());
@@ -438,7 +439,7 @@
       console.warn("Could not prepare the requested LAN video.", error);
       updateLanSharingControls(typeof error === "string" ? error : error.message || "A requested LAN video could not be prepared.");
     } finally {
-      lanPreparingKeys.delete(request.key);
+      lanPreparingKeys.delete(requestId);
     }
   }
 

@@ -48,7 +48,7 @@ struct ShareState {
     address: Option<String>,
     files: Option<Arc<Mutex<HashMap<String, VideoFile>>>>,
     staging_root: Option<PathBuf>,
-    pending_files: Option<Arc<Mutex<HashMap<String, (u64, u64)>>>>,
+    pending_files: Option<Arc<Mutex<HashMap<String, Vec<(u64, u64)>>>>>,
 }
 
 #[derive(Serialize)]
@@ -168,7 +168,13 @@ fn get_lan_prepare_requests(
         .lock()
         .map_err(|_| "LAN sharing state is unavailable.".to_string())?
         .drain()
-        .map(|(key, (start, end))| PrepareRequest { key, start, end })
+        .flat_map(|(key, ranges)| {
+            ranges.into_iter().map(move |(start, end)| PrepareRequest {
+                key: key.clone(),
+                start,
+                end,
+            })
+        })
         .collect();
     Ok(requests)
 }
@@ -246,6 +252,7 @@ fn stage_lan_share_file(
     }
     file.seek(SeekFrom::Start(offset))
         .and_then(|_| file.write_all(&data))
+        .and_then(|_| file.flush())
         .map_err(|error| format!("Could not copy a loaded video for LAN sharing: {error}"))?;
     let files = current
         .files
@@ -406,7 +413,7 @@ fn build_loaded_library_from_paths(
 fn serve_requests(
     server: Server,
     files: Arc<Mutex<HashMap<String, VideoFile>>>,
-    pending_files: Arc<Mutex<HashMap<String, (u64, u64)>>>,
+    pending_files: Arc<Mutex<HashMap<String, Vec<(u64, u64)>>>>,
     password: String,
     token: String,
     stop: Arc<Mutex<bool>>,
@@ -440,7 +447,7 @@ fn serve_requests(
 fn handle_request(
     mut request: Request,
     files: &Arc<Mutex<HashMap<String, VideoFile>>>,
-    pending_files: &Arc<Mutex<HashMap<String, (u64, u64)>>>,
+    pending_files: &Arc<Mutex<HashMap<String, Vec<(u64, u64)>>>>,
     password: &str,
     token: &str,
 ) {
@@ -545,7 +552,7 @@ fn path_from_url(value: &str) -> Option<String> {
 fn stream_file(
     request: Request,
     files: &Arc<Mutex<HashMap<String, VideoFile>>>,
-    pending_files: &Arc<Mutex<HashMap<String, (u64, u64)>>>,
+    pending_files: &Arc<Mutex<HashMap<String, Vec<(u64, u64)>>>>,
     key: &str,
 ) {
     let Some(file) = files.lock().ok().and_then(|files| files.get(key).cloned()) else {
@@ -560,13 +567,30 @@ fn stream_file(
     if range_header.is_some() && range.is_none() {
         return respond_text(request, 416, "Invalid byte range.", "text/plain");
     }
-    let (start, requested_end) = range.unwrap_or((0, file.size.saturating_sub(1)));
+    // A surprising number of TV media stacks do not send Range on their first
+    // request.  Returning the first prepared fragment as 206 makes those
+    // clients treat it as the complete movie and immediately report EOF.
+    // Keep that request open as an ordinary 200 response and fill it as the
+    // reader advances through the staged file.
+    if range.is_none() {
+        queue_pending_range(
+            pending_files,
+            &file.metadata.key,
+            0,
+            file.size.min(PREPARE_CHUNK_SIZE).saturating_sub(1),
+        );
+        return stream_staged_file(request, file, Arc::clone(files), Arc::clone(pending_files));
+    }
+    let (start, requested_end) = range.unwrap();
     let mut end = requested_end;
     if let Some((missing_start, missing_end)) = missing_range(&file, start, requested_end) {
         if missing_start == start {
-            if let Ok(mut pending) = pending_files.lock() {
-                pending.insert(file.metadata.key.clone(), (missing_start, missing_end));
-            }
+            queue_pending_range(
+                pending_files,
+                &file.metadata.key,
+                missing_start,
+                missing_end,
+            );
             let deadline = Instant::now() + Duration::from_secs(30);
             let mut prepared = None;
             while Instant::now() < deadline {
@@ -588,6 +612,115 @@ fn stream_file(
         end = (missing_start - 1).min(start.saturating_add(PREPARE_CHUNK_SIZE - 1));
     }
     stream_prepared_file(request, file, start, end, range.is_some());
+}
+
+/// Add a preparation request without discarding a concurrent seek for the
+/// same video.  Mobile browsers regularly issue overlapping metadata, seek,
+/// and playback ranges at once.
+fn queue_pending_range(
+    pending_files: &Arc<Mutex<HashMap<String, Vec<(u64, u64)>>>>,
+    key: &str,
+    start: u64,
+    end: u64,
+) {
+    if start > end {
+        return;
+    }
+    if let Ok(mut pending) = pending_files.lock() {
+        let ranges = pending.entry(key.to_string()).or_default();
+        add_available_range(ranges, start, end);
+    }
+}
+
+struct StagedFileReader {
+    key: String,
+    position: u64,
+    end: u64,
+    files: Arc<Mutex<HashMap<String, VideoFile>>>,
+    pending_files: Arc<Mutex<HashMap<String, Vec<(u64, u64)>>>>,
+}
+
+impl Read for StagedFileReader {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        if output.is_empty() || self.position > self.end {
+            return Ok(0);
+        }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let Some(file) = self
+                .files
+                .lock()
+                .ok()
+                .and_then(|files| files.get(&self.key).cloned())
+            else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "Video not found",
+                ));
+            };
+            let available_end = file
+                .available
+                .iter()
+                .find(|(start, end)| *start <= self.position && *end >= self.position)
+                .map(|(_, end)| *end);
+            let Some(available_end) = available_end else {
+                let requested_end = self
+                    .end
+                    .min(self.position.saturating_add(PREPARE_CHUNK_SIZE - 1));
+                queue_pending_range(&self.pending_files, &self.key, self.position, requested_end);
+                if Instant::now() >= deadline {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "Video segment was not prepared",
+                    ));
+                }
+                thread::sleep(Duration::from_millis(50));
+                continue;
+            };
+            let count =
+                ((available_end.min(self.end) - self.position + 1) as usize).min(output.len());
+            let mut source = File::open(&file.path)?;
+            source.seek(SeekFrom::Start(self.position))?;
+            source.read_exact(&mut output[..count])?;
+            self.position += count as u64;
+            return Ok(count);
+        }
+    }
+}
+
+fn stream_staged_file(
+    request: Request,
+    file: VideoFile,
+    files: Arc<Mutex<HashMap<String, VideoFile>>>,
+    pending_files: Arc<Mutex<HashMap<String, Vec<(u64, u64)>>>>,
+) {
+    if request.method() == &Method::Head {
+        let response = Response::empty(StatusCode(200))
+            .with_header(Header::from_bytes("Content-Type", mime_type(&file.path)).unwrap())
+            .with_header(Header::from_bytes("Accept-Ranges", "bytes").unwrap())
+            .with_header(Header::from_bytes("Content-Length", file.size.to_string()).unwrap());
+        let _ = request.respond(response);
+        return;
+    }
+    let reader = StagedFileReader {
+        key: file.metadata.key,
+        position: 0,
+        end: file.size.saturating_sub(1),
+        files,
+        pending_files,
+    };
+    let response = Response::new(
+        StatusCode(200),
+        vec![
+            Header::from_bytes("Content-Type", mime_type(&file.path)).unwrap(),
+            Header::from_bytes("Accept-Ranges", "bytes").unwrap(),
+        ],
+        reader,
+        usize::try_from(file.size).ok(),
+        None,
+    )
+    .with_chunked_threshold(usize::MAX);
+    let _ = request.respond(response);
 }
 
 fn stream_prepared_file(request: Request, file: VideoFile, start: u64, end: u64, has_range: bool) {
